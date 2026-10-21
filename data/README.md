@@ -1,0 +1,1 @@
+Add Model details Page.xlsx and ML_HUB_synthetic_5000rows.xlsx here. Put Parquet files in LogAnalytics/ and NewRelic/. Back up existing SQLite state before replacing the data folder. Missing schema is recreated on startup.

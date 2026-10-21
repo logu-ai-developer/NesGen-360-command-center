@@ -1,0 +1,12 @@
+# POC limitations
+- No live Gemini/model availability test. The V0 model ID is retained, not endorsed.
+- Token estimates are approximate. Provider quotas remain authoritative. Local counters do not cover other apps sharing the key/project.
+- Query interruption is best effort, not an OS sandbox; Excel loading is not covered by the DuckDB timer.
+- Execution labels confirm retrieval, not every generated sentence. Hallucination/prompt-injection risk is reduced, not eliminated.
+- Supported structured-query scope dimensions are enforced; unsupported scope is disclosed. Summary tools do not support every dimension.
+- Source confidentiality/synthetic classification requires operator review.
+- Legacy dashboard telemetry requests/success fields count log events/non-error events, not deduplicated request success.
+- Provider allocation from expected users is estimated; approval-date filters select cohorts, not consumption dates.
+- Dormancy threshold is stored but does not reclassify workbook status without activity timestamps.
+- No authentication/RBAC. Localhost only. Production identity, audit, privacy and managed secrets/storage remain future work.
+- Streamlit 1.66.0 is pinned but unavailable from the sandbox mirror; page tests used 1.53.1. Windows, Docker and actual source files require local validation.
