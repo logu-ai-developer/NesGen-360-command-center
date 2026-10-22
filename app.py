@@ -41,19 +41,8 @@ def filtered_models():
  return d
 
 def executive():
- header('Executive overview','Decision intelligence','Prioritize the operational, financial and governance decisions that require leadership attention.')
- st.markdown('<div class="callout"><b>Today’s focus:</b> protect pre-production reliability, explain the AWS variance and assign model-retirement ownership.</div>',unsafe_allow_html=True)
- a=filtered_apps();m=filtered_models();h=get_health();c=synthetic_charges();cols=st.columns(4)
- with cols[0]:kpi('Platform availability',f"{h.success_rate.mean():.2f}%",'Across selected decision scope')
- with cols[1]:kpi('Governed models',len(m),f"{int((m.risk=='High').sum())} high-risk reviews")
- with cols[2]:kpi('Monthly active apps',int((a.status.astype(str).str.contains('Active|Operational',case=False)).sum()),'Sustained use signal')
- with cols[3]:kpi('Priority actions',3,'1 critical · 1 financial · 1 governance')
- l,r=st.columns([1.6,1])
- with l:
-  st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Usage and reliability trend');trend=h.tail(30).copy();fig=go.Figure();fig.add_trace(go.Bar(x=trend.date,y=trend.requests,name='Requests',marker_color='#c6d2e2'));fig.add_trace(go.Scatter(x=trend.date,y=trend.success_rate,name='Success %',yaxis='y2',line=dict(color='#1768ff',width=3)));fig.update_layout(height=330,margin=dict(l=10,r=10,t=15,b=5),plot_bgcolor='white',legend_orientation='h',yaxis2=dict(overlaying='y',side='right',range=[90,100]),hovermode='x unified');st.plotly_chart(fig,width='stretch',config={'displayModeBar':False,'displaylogo':False,'responsive':True});st.markdown('</div>',unsafe_allow_html=True)
- with r:
-  st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Provider consumption');p=provider_consumption(a);fig=px.pie(p,names='provider',values='monthly_requests',hole=.62,color='provider',color_discrete_map=PROVIDER_COLORS);fig.update_traces(textposition='inside',textinfo='percent',hovertemplate='<b>%{label}</b><br>Monthly requests: %{value:,.0f}<br>Portfolio share: %{percent:.1%}<extra></extra>');fig.update_layout(height=345,margin=dict(l=10,r=10,t=10,b=10),paper_bgcolor='rgba(0,0,0,0)',legend=dict(y=.9,x=1.02));st.plotly_chart(fig,width='stretch',config={'displayModeBar':False,'displaylogo':False,'responsive':True});st.markdown('</div>',unsafe_allow_html=True)
- st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Leadership action queue');st.dataframe(synthetic_alerts(),hide_index=True,width='stretch');st.markdown('</div>',unsafe_allow_html=True)
+ from src.executive_ui import render_executive
+ render_executive()
 
 def lifecycle():
  header('Model lifecycle','Responsible AI governance','Manage exploration, validation, industrialization, review and retirement with accountable evidence.')
