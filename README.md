@@ -432,6 +432,7 @@ Environment labels are not universally mapped. For example, `PROD`, `Production`
 
 ### Fallback and provenance
 
+- Source-mode vocabulary: `workbook`, `parquet`, `synthetic fallback`, `synthetic scenario`, `derived from workbook`, `derived from parquet`, `locally registered`, `unclassified telemetry present`. A badge shows origin only, not freshness, correctness, approval, production status, a live integration or certification.
 - Applications: valid workbook, otherwise deterministic synthetic fallback.
 - Models: valid workbook, otherwise synthetic fallback; append local model registrations.
 - Dashboard health: valid New Relic aggregate, otherwise synthetic fallback.
@@ -457,6 +458,10 @@ Provider share (%)
 
 The equal-split fallback is an assumption, not measured usage. If monthly requests came from expected users × 30, the provider chart is also an estimate. Approval-date filtering selects application cohorts; it does not measure consumption during that date window.
 
+### Stage, status, approval and activity (V1.1 Phase 1)
+
+Portfolio **stage** (Sandbox, Industrialized), portfolio **status** (Active, Dormant, New, Onboarding), **approval** within a period and **activity** within a period are different concepts. User Adoption shows *Sandbox / Industrialized use cases* (stage) and *Active-status / New-status / Dormant-status / Onboarding-status use cases* (status field, exact allow-listed match; `Inactive` is Unknown, never Active). No activity timestamp is validated, so there is no "monthly active", "new this month" or "no use in 30 days" metric. Counts use the canonical application/use-case ID (names are labels; rows without an ID are reported, not counted). Users are labelled **Estimated** (synthetic fallback), **Reported** (workbook) or, in future, **Observed** (activity source with timestamp, identity, period and deduplication rule). See `docs/METRIC_DEFINITIONS.md`.
+
 ### Onboarding versus adoption
 
 The AI trend tool counts approval-date rows and distinct application IDs separately. It does not infer actual active users from expected users. Portfolio totals are separate from window totals. Daily, weekly and monthly buckets include zeros; boundary weeks/months can be partial.
@@ -468,9 +473,19 @@ The AI trend tool counts approval-date rows and distinct application IDs separat
 
 The general structured-query tool has different behavior: its omitted `as_of` defaults to `latest`, and its generic latest anchor can include future source dates. Prefer the dedicated onboarding examples for the documented non-future behavior; inspect returned date metadata for custom queries.
 
-### Health
+### Health (V1.1 Phase 1)
 
-New Relic `requests` counts log events. `success_rate` is the non-ERROR/FATAL event percentage in the dashboard adapter, not verified availability. Null severity handling differs between the dashboard adapter and direct-query metric. A mean of daily percentages is unweighted; maximum daily P95 is not P95 over all events. The legacy page's P95 display is also derived from daily P95 values, not recomputed from raw events.
+Every telemetry event is **Successful** (`Body.Tracepoint = FLOW-END`), **Failed** (`FLOW-ERROR`) or **Unclassified** (anything else, including no marker). An event is never assumed successful because it has no error marker.
+
+```text
+Total events                 = Successful + Failed + Unclassified
+Classified calls             = Successful + Failed
+Classified-call success rate = Successful / Classified calls x 100      (N/A when Classified calls = 0)
+Classified-call failure rate = Failed / Classified calls x 100          (N/A when Classified calls = 0)
+Unclassified share           = Unclassified / Total events x 100
+```
+
+One shared helper (`src/metrics.py`) drives the Platform Health cards, the daily trend, failures by model, top errors, the Executive finding, decision briefs and AI/tool evidence, so they cannot disagree. The severity-based "non-error event rate" (`non_error_event_percent` query metric) is a different measure and is not comparable to the classified-call success rate. Neither is verified availability or deduplicated request success. Maximum daily P95 is not P95 over all events; the page's "daily trend" P95 is a percentile of daily P95s over classified calls. The earlier "Services healthy 41 / 43" card was removed because it was a hardcoded illustration. See `docs/METRIC_DEFINITIONS.md`.
 
 ### Chargeback and alerts
 
@@ -702,6 +717,8 @@ Coverage in the supplied tests includes date boundaries, future approvals, sourc
 
 Bundled reports record earlier milestones: **78** rebuild tests, **94** AI-update tests and **115** login-update tests. Those are historical results, not a fresh result for this exact bundle. The current source adds request-lock tests and other edits. This README was prepared by source review only; no new pass count is claimed.
 
+**V1.1 Phase 1 result:** the starting local snapshot reported 133 passing tests (historical, earlier snapshot). After Phase 1 the full suite is run again; the measured result is recorded in `docs/VALIDATION.md`. New focused tests are in `tests/test_phase1_metrics.py` (run `.\.venv\Scripts\python.exe -m pytest -q tests/test_phase1_metrics.py`).
+
 Earlier page reports used Streamlit **1.53.1** because the sandbox mirror lacked pinned **1.66.0**. Exact clean installation of the current requirements, live model access, actual user datasets, Windows interactive setup, Docker execution and production security were not established by those reports. Run and record your local result before the demo.
 
 ## 15. Troubleshooting
@@ -892,10 +909,10 @@ This README follows executable code in `nesgen360-final-project-bundle-v1.txt` w
 | 78 / 94 / 115 tests passed | Historical milestones, not a fresh pass count for this request-lock snapshot |
 | Copy `secrets.toml.example` | That example is not included in this text snapshot; create sanitized non-secret config if needed |
 | All sidebar filters apply globally | Application/model/health panels and tools support different dimensions; inspect each source and returned scope |
-| “Monthly active”, “New this month”, “Dormant 30 days” | Current page logic uses status-string matches, not a validated activity/date-window calculation; “Inactive” can also match a substring search for “Active” |
-| Availability / request success | Telemetry fields are log-event proxies; no verified end-to-end availability calculation is established |
+| “Monthly active”, “New this month”, “Dormant 30 days” | *Resolved in V1.1 Phase 1:* now Active-status / New-status / Dormant-status use cases, matched exactly (no substring matching). Still status fields, not a validated activity/date-window calculation |
+| Availability / request success | *Resolved in V1.1 Phase 1:* renamed Classified-call success rate (Successful / (Successful + Failed)); unclassified events are excluded and disclosed. Still no verified end-to-end availability calculation |
 | “P95 latency” across the period | Some page calculations aggregate daily P95 values; use direct event-level P95 for that distinct metric |
-| “Today’s focus” / fixed priority count / 41 of 43 services | Scenario or fixed UI values, not universally recomputed live facts |
+| “Today’s focus” / fixed priority count / 41 of 43 services | Focus and priority count are computed from decision-brief rules; chargeback/alert inputs are synthetic scenarios. The 41 / 43 services card was removed in V1.1 Phase 1 |
 | Dollar labels / “NesGen / MuleSoft” in Chargeback | Presentation labels for a synthetic scenario, not verified currency or a live MuleSoft integration |
 | Data/source labels certify sanitization | Operators must verify classification and approval; the code cannot certify arbitrary files |
 

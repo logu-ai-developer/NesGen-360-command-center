@@ -1,7 +1,9 @@
 """Bounded audience-oriented evidence. Reuses existing adapters; no new source access."""
 import pandas as pd
-from src.query_tools import get_apps,get_health,synthetic_charges,synthetic_alerts
+from src.query_tools import get_apps,get_models,get_health,synthetic_charges,synthetic_alerts
 from src.storage import get_setting
+from src.insights import build_decision_brief
+from src.metrics import health_outcomes,canonical_use_cases,NO_CLASSIFIED_NOTE
 
 def today_utc():
     return pd.Timestamp.now(tz='UTC').tz_localize(None).normalize()
@@ -29,6 +31,7 @@ def get_onboarding_trend(days: int=90, region: str='Global', anchor: str='today'
     end=today if anchor=='today' else available.max().normalize()
     start=end-pd.Timedelta(days=days-1)
     valid=dates.between(start,end+pd.Timedelta(days=1),inclusive='left')
+    portfolio=canonical_use_cases(d)[1]
     w=d.loc[valid].copy();w['approval_date']=dates[valid]
     if bucket=='auto':bucket='day' if days<=31 else 'week' if days<=180 else 'month'
     frequency={'day':'D','week':'W-SUN','month':'M'}[bucket]
@@ -43,7 +46,8 @@ def get_onboarding_trend(days: int=90, region: str='Global', anchor: str='today'
         'date_range':{'start':str(start.date()),'end':str(end.date()),'anchor':anchor,'inclusive_days':days},
         'future_dated_rows_excluded':int(future.sum()),'invalid_date_rows':int(dates.isna().sum()),
         'days':days,'window_approval_rows':len(w),'window_unique_applications':int(w.id.nunique()),
-        'portfolio_rows_in_scope':len(d),'bucket':bucket,'buckets':buckets,
+        'portfolio_rows_in_scope':len(d),'portfolio_use_cases_in_scope':portfolio['canonical_use_cases'],
+        'portfolio_rows_without_id':portfolio['missing_id_rows'],'bucket':bucket,'buckets':buckets,
         'notes':['Zero buckets are included. Boundary weeks/months may be partial.',
                  'Approval dates cannot establish sustained usage. Missing rows do not prove no real-world onboarding.']}
 
@@ -78,14 +82,23 @@ def get_platform_report(days: int=7, anchor: str='today'):
     if anchor=='latest' and valid_dates.empty:return {'status':'error','message':'No non-future health dates available'}
     end=today if anchor=='today' else valid_dates.max().normalize();start=end-pd.Timedelta(days=days-1)
     w=d[(dates>=start)&(dates<end+pd.Timedelta(days=1))]
-    metrics=None if w.empty else {'daily_rows':len(w),'logged_events_or_synthetic_requests':float(w.requests.sum()),
-        'unweighted_average_daily_non_error_percent':float(w.success_rate.mean()),
-        'maximum_daily_p95_ms':float(w.p95_latency_ms.max())}
+    metrics=None
+    if not w.empty:
+        o=health_outcomes(w);daily=pd.to_numeric(w.success_rate,errors='coerce').dropna();p95=pd.to_numeric(w.p95_latency_ms,errors='coerce').max()
+        metrics={'daily_rows':len(w),'events_in_scope':o['events'],'classified_calls':o['classified'],
+            'successful_classified_calls':o['success'],'failed_classified_calls':o['failed'],'unclassified_events':o['unclassified'],
+            # None = unavailable: no classified calls (or no events), not a measured 0%.
+            'classified_call_success_rate_percent':o['success_pct'],'classified_call_failure_rate_percent':o['failure_pct'],
+            'unclassified_event_percent':o['unclassified_pct'],
+            'unweighted_average_daily_classified_success_percent':float(daily.mean()) if len(daily) else None,
+            'maximum_daily_p95_ms':None if pd.isna(p95) else float(p95),
+            'unclassified_telemetry_present':o['unclassified']>0}
+        if not o['classified']:metrics['rate_unavailable_reason']=NO_CLASSIFIED_NOTE
     return {'status':'ok','source':'Dashboard: Platform health',**provenance,
         'days':days,'date_range':{'start':str(start.date()),'end':str(end.date()),'anchor':anchor},
         'future_dated_rows_excluded':int(future.sum()),'metrics':metrics,
         'alerts':_alert_rows(), 'alert_freshness':'Scenario alerts have no verified event timestamp; occurrence today is NOT verified.',
-        'metric_note':'Event counts are not deduplicated requests; maximum daily P95 is not global event P95.'}
+        'metric_note':'Classified-call success rate = successful / (successful + failed) x 100. Unclassified events are excluded from the denominator and never counted as successful. This is not verified end-to-end availability. Event counts are not deduplicated requests; maximum daily P95 is not global event P95.'}
 
 def _alert_rows():
     d=synthetic_alerts().copy()
@@ -95,9 +108,12 @@ def _alert_rows():
 
 def get_decision_brief():
     """Open scenario actions for stakeholders, with no claim they occurred today."""
+    findings=build_decision_brief(get_apps(),get_models(),get_health(),synthetic_charges(),synthetic_alerts())
     return {'status':'ok','source':'Dashboard: Executive overview / open scenarios',
         'source_mode':'synthetic scenario','as_of':str(today_utc().date()),
         'alerts':_alert_rows(),'freshness':'No verified event timestamp. These are open scenario records, not verified events today.',
+        # Same rule-based findings as the Executive overview; chargeback and alert inputs are synthetic scenarios.
+        'findings':[{k:i[k] for k in ('severity','category','title','evidence','source')} for i in findings[:10]],
         'suggested_actions_are_recommendations':True,
         'recommendations':['Investigate the open reliability scenario with platform support.',
             'Review invoice-to-attributed-usage gaps with FinOps.',

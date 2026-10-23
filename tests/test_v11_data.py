@@ -11,7 +11,8 @@ def test_synthetic_apps_has_100_use_cases_and_contract_columns():
 
 def test_telemetry_shape_and_consistency():
     t=data.get_telemetry();s=t['stats']
-    assert s['success']+s['failed']==s['total']
+    assert s['success']+s['failed']==s['classified'] and s['classified']+s['unclassified']==s['events']
+    assert t['by_model'].calls.sum()==s['classified'] and t['by_model'].failures.sum()==s['failed']
     assert {'model','provider','calls','failures','failure_rate'}.issubset(t['by_model'].columns)
     assert {'error_code','error_message','error_source','occurrences'}.issubset(t['errors'].columns)
     assert (t['by_model'].failures<=t['by_model'].calls).all()

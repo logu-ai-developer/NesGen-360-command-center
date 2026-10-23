@@ -29,7 +29,7 @@ def test_chargeback_variance_flags_aws_only():
 
 
 def test_clean_data_gives_empty_brief():
-    health = pd.DataFrame({'success_rate': [99.5, 99.0]})
+    health = pd.DataFrame({'success_rate': [99.5, 99.0], 'successful_calls': [995, 990], 'failed_calls': [5, 10], 'unclassified_events': [0, 0]})
     charges = pd.DataFrame({'provider': ['Azure'], 'provider_bill': [1], 'platform_usage': [1], 'variance': [1.0]})
     items = build_decision_brief(None, None, health, charges, None)
     assert items == []

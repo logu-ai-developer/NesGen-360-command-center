@@ -75,3 +75,6 @@ You reported "This page could not render". I could not reproduce it with real da
 ## 6. Files changed
 `app.py`, `src/components.py`, `src/data.py`, new `src/insights.py`, `docs/DATA_CONTRACTS.md`, tests (`test_final.py` and `test_rebuild.py` updated from 114 to 100; new `test_insights.py`, `test_v11_data.py`).
 Note: the older `nesgen-360-final-V0` folder holds an earlier version of the same S1 work and is not what runs.
+
+## Phase 1: metric correctness (see `docs/METRIC_DEFINITIONS.md`)
+Unclassified telemetry is no longer treated as successful anywhere; "Platform availability" became "Classified-call success rate"; status-derived adoption metrics are named Active-/New-/Dormant-/Onboarding-status use cases; counts use canonical IDs; active users are Estimated or Reported; "Services healthy 41 / 43" was removed; source-mode vocabulary was standardised. New module `src/metrics.py`. The "Known data issues" item above about the daily trend counting unclassified rows as successes is resolved.

@@ -12,6 +12,7 @@ import duckdb
 import pandas as pd
 from src import data as dashboard
 from src.provider import provider_consumption, normalize_allocations
+from src.metrics import outcome_sql, annotate_use_cases
 
 MAX_ROWS = 100
 MAX_BYTES = 12000
@@ -69,11 +70,21 @@ CATALOG = {
  'applications': {
   'source': 'Dashboard: User adoption',
   'mode': 'dashboard adapter; source/fallback provenance not independently verified',
-  'dimensions': ['region', 'environment', 'status', 'platform', 'recertification_status'],
-  'numeric': ['expected_daily_users', 'business_value'], 'date': 'created_date',
+  'dimensions': ['region', 'environment', 'status', 'status_category', 'use_case_stage', 'segment', 'platform', 'recertification_status'],
+  'numeric': ['expected_daily_users', 'business_value', 'active_users'], 'date': 'created_date',
   'metrics': {
-   'application_rows': _metric('COUNT(*)', 'Application rows, not necessarily unique application IDs.'),
+   'application_rows': _metric('COUNT(*)', 'Application ROWS, not distinct use cases: repeated IDs and rows without an ID are counted.'),
    'unique_applications': _metric('COUNT(DISTINCT "id")', 'Distinct non-null application identifiers.'),
+   'canonical_use_cases': _metric('COUNT(*) FILTER (WHERE "canonical_row")', 'Distinct canonical use-case IDs (first row per ID); the name is a display label only. Rows without an ID are excluded.'),
+   'missing_id_rows': _metric('COUNT(*) FILTER (WHERE "id" IS NULL)', 'Rows with no application/use-case ID; preserved, never given an invented ID.'),
+   'sandbox_use_cases': _metric('COUNT(*) FILTER (WHERE "canonical_row" AND "use_case_stage" = \'Sandbox\')', 'Canonical use cases in the Sandbox portfolio stage; stage is separate from status, approval and activity.'),
+   'industrialized_use_cases': _metric('COUNT(*) FILTER (WHERE "canonical_row" AND "use_case_stage" = \'Industrialized\')', 'Canonical use cases in the Industrialized portfolio stage; stage is separate from status, approval and activity.'),
+   'active_status_use_cases': _metric('COUNT(*) FILTER (WHERE "canonical_row" AND "status_category" = \'Active\')', 'Canonical use cases whose status field is exactly Active (Operational is an alias); Inactive is not Active. Status field, not measured activity.'),
+   'dormant_status_use_cases': _metric('COUNT(*) FILTER (WHERE "canonical_row" AND "status_category" = \'Dormant\')', 'Canonical use cases whose status field is Dormant. No validated last-activity timestamp exists, so no inactivity window is claimed.'),
+   'new_status_use_cases': _metric('COUNT(*) FILTER (WHERE "canonical_row" AND "status_category" = \'New\')', 'Canonical use cases whose status field is New; not newly approved within a period.'),
+   'onboarding_status_use_cases': _metric('COUNT(*) FILTER (WHERE "canonical_row" AND "status_category" = \'Onboarding\')', 'Canonical use cases whose status field is Onboarding.'),
+   'unknown_status_use_cases': _metric('COUNT(*) FILTER (WHERE "canonical_row" AND "status_category" = \'Unknown\')', 'Canonical use cases whose status is missing or not in the allow-list; preserved as Unknown.'),
+   'active_users': _metric('SUM(TRY_CAST("active_users" AS DOUBLE)) FILTER (WHERE "canonical_row")', 'Sum of active_users over canonical use cases. Synthetic fallback: estimate from expected users. Workbook: reported, measurement unverified. Not observed identities.'),
    'expected_daily_users': _metric('SUM(TRY_CAST("expected_daily_users" AS DOUBLE))', 'Sum of expected users; not observed active users.'),
    'business_value': _metric('SUM(TRY_CAST("business_value" AS DOUBLE))', 'Sum of workbook business-value field; unit/currency is not inferred.') }},
  'models': {
@@ -84,10 +95,15 @@ CATALOG = {
               'average_evaluation': _metric('AVG(TRY_CAST("evaluation_score" AS DOUBLE))','Mean evaluation score; not a lifecycle-risk score.')}},
  'health_daily': {
   'source': 'Dashboard: Platform health', 'mode': 'dashboard daily aggregate adapter; source/fallback provenance not independently verified',
-  'dimensions': ['environment'], 'numeric': ['requests','success_rate','p95_latency_ms','cost'], 'date': 'date',
+  'dimensions': ['environment'], 'numeric': ['requests','success_rate','successful_calls','failed_calls','unclassified_events','p95_latency_ms','cost'], 'date': 'date',
   'metrics': {'daily_rows': _metric('COUNT(*)','Daily aggregate rows.'),
-   'requests': _metric('SUM(TRY_CAST("requests" AS DOUBLE))','Sum of requests in daily aggregates.'),
-   'average_daily_success_rate': _metric('AVG(TRY_CAST("success_rate" AS DOUBLE))','Unweighted mean of daily success percentages, not an event-weighted success rate.'),
+   'requests': _metric('SUM(TRY_CAST("requests" AS DOUBLE))','Sum of daily event counts (successful + failed + unclassified); not deduplicated requests.'),
+   'successful_classified_calls': _metric('SUM(TRY_CAST("successful_calls" AS DOUBLE))','Classified calls with a success marker (Body.Tracepoint FLOW-END).'),
+   'failed_classified_calls': _metric('SUM(TRY_CAST("failed_calls" AS DOUBLE))','Classified calls with a failure marker (Body.Tracepoint FLOW-ERROR).'),
+   'unclassified_events': _metric('SUM(TRY_CAST("unclassified_events" AS DOUBLE))','Events with neither a success nor a failure marker; never counted as successful.'),
+   'classified_calls': _metric('SUM(TRY_CAST("successful_calls" AS DOUBLE))+SUM(TRY_CAST("failed_calls" AS DOUBLE))','Successful + failed classified calls.'),
+   'classified_call_success_rate': _metric('100.0*SUM(TRY_CAST("successful_calls" AS DOUBLE))/NULLIF(SUM(TRY_CAST("successful_calls" AS DOUBLE))+SUM(TRY_CAST("failed_calls" AS DOUBLE)),0)','Successful / (successful + failed) x 100 over all rows; NULL (unavailable) when there are no classified calls. Not verified availability.'),
+   'average_daily_success_rate': _metric('AVG(TRY_CAST("success_rate" AS DOUBLE))','Unweighted mean of daily classified-call success percentages (days without classified calls are skipped); not the event-weighted classified_call_success_rate.'),
    'maximum_daily_p95_ms': _metric('MAX(TRY_CAST("p95_latency_ms" AS DOUBLE))','Maximum daily P95; not the P95 across all events.'),
    'total_cost': _metric('SUM(TRY_CAST("cost" AS DOUBLE))','Sum of dashboard cost values; source currency is not inferred.')}},
  'provider_usage': {
@@ -96,14 +112,14 @@ CATALOG = {
   'dimensions': ['provider','region','environment','status'], 'numeric': ['allocated_monthly_requests'], 'date': 'created_date',
   'metrics': {'allocated_monthly_requests': _metric('SUM(TRY_CAST("allocated_monthly_requests" AS DOUBLE))','Monthly requests multiplied by normalized provider allocation. If monthly_requests was derived from expected users, this is an estimate, not measured telemetry.')}},
  'charges': {
-  'source': 'Dashboard: Chargeback', 'mode': 'existing synthetic scenario adapter',
+  'source': 'Dashboard: Chargeback', 'mode': 'synthetic scenario; fixed demonstration records',
   'dimensions': ['provider','status','period'], 'numeric': ['provider_bill','platform_usage','variance'], 'date': None,
   'metrics': {'provider_invoice': _metric('SUM(TRY_CAST("provider_bill" AS DOUBLE))','Sum of scenario provider invoice values.'),
    'attributed_usage': _metric('SUM(TRY_CAST("platform_usage" AS DOUBLE))','Sum of scenario attributed usage values.'),
    'unexplained_amount': _metric('SUM(TRY_CAST("provider_bill" AS DOUBLE)-TRY_CAST("platform_usage" AS DOUBLE))','Invoice less attributed usage.'),
    'maximum_variance_percent': _metric('MAX(TRY_CAST("variance" AS DOUBLE))','Largest stored provider variance; not a weighted total variance.')}},
  'alerts': {
-  'source': 'Dashboard: Executive overview / alerts', 'mode': 'existing synthetic scenario adapter',
+  'source': 'Dashboard: Executive overview / alerts', 'mode': 'synthetic scenario; fixed demonstration records',
   'dimensions': ['severity','status','source'], 'numeric': [], 'date': None,
   'metrics': {'alert_rows': _metric('COUNT(*)','Alert records; no owner or free-text payload is returned.')}},
  'sqlite_charges': {
@@ -114,17 +130,22 @@ CATALOG = {
   'source': 'SQLite: operational_alerts or alerts', 'mode': 'read-only SQLite snapshot, separate from dashboard scenario adapter',
   'dimensions': ['severity','status','source'], 'numeric': [], 'date': None, 'metrics': {}},
  'new_relic': {
-  'source': 'Parquet: NewRelic', 'mode': 'direct local Parquet, no fallback',
-  'dimensions': ['provider','environment','model','service','severity'],
+  'source': 'Parquet: NewRelic', 'mode': 'parquet; direct local, no fallback',
+  'dimensions': ['provider','environment','model','service','severity','outcome'],
   'numeric': ['latency_ms','total_tokens','total_cost'], 'date': 'event_time',
-  'metrics': {'events': _metric('COUNT(*)','Log-event count, not deduplicated requests.'),
+  'metrics': {'events': _metric('COUNT(*)','Log-event count (successful + failed + unclassified), not deduplicated requests.'),
+   'successful_classified_calls': _metric('COUNT(*) FILTER (WHERE "outcome" = \'Successful\')','Events with Body.Tracepoint FLOW-END.'),
+   'failed_classified_calls': _metric('COUNT(*) FILTER (WHERE "outcome" = \'Failed\')','Events with Body.Tracepoint FLOW-ERROR.'),
+   'unclassified_events': _metric('COUNT(*) FILTER (WHERE "outcome" = \'Unclassified\')','Events with neither marker; never counted as successful.'),
+   'classified_calls': _metric('COUNT(*) FILTER (WHERE "outcome" <> \'Unclassified\')','Successful + failed classified calls.'),
+   'classified_call_success_rate': _metric('100.0*COUNT(*) FILTER (WHERE "outcome" = \'Successful\')/NULLIF(COUNT(*) FILTER (WHERE "outcome" <> \'Unclassified\'),0)','Successful / (successful + failed) x 100; NULL (unavailable) when there are no classified calls. Unclassified events are excluded from the denominator. Not verified availability.'),
    'total_tokens': _metric('SUM("total_tokens")','Sum of logged tokens; duplicate events may double-count.'),
    'total_cost': _metric('SUM("total_cost")','Sum of logged cost values; duplicate events may double-count.'),
    'average_latency_ms': _metric('AVG("latency_ms")','Mean responseTime across log events.'),
    'p95_latency_ms': _metric('QUANTILE_CONT("latency_ms",0.95)','P95 across non-null responseTime values in matching events.'),
-   'non_error_event_percent': _metric("100.0*AVG(CASE WHEN \"severity\" IS NULL THEN NULL WHEN UPPER(\"severity\") IN ('ERROR','FATAL') THEN 0.0 ELSE 1.0 END)", 'Percentage of non-ERROR/FATAL events among events with severity; not verified request success.')}},
+   'non_error_event_percent': _metric("100.0*AVG(CASE WHEN \"severity\" IS NULL THEN NULL WHEN UPPER(\"severity\") IN ('ERROR','FATAL') THEN 0.0 ELSE 1.0 END)", 'Non-error event rate: share of non-ERROR/FATAL events among events with a severity (no-severity events excluded). Severity-based; not the classified-call success rate.')}},
  'log_analytics': {
-  'source': 'Parquet: LogAnalytics', 'mode': 'direct local Parquet, no fallback',
+  'source': 'Parquet: LogAnalytics', 'mode': 'parquet; direct local, no fallback',
   'dimensions': ['environment','model','service'], 'numeric': ['latency_ms','total_tokens'], 'date': 'event_time',
   'metrics': {'events': _metric('COUNT(*)','Log-event count, not deduplicated requests.'),
    'total_tokens': _metric('SUM("total_tokens")','Sum of logged tokens.'),
@@ -217,10 +238,15 @@ def _connection(name):
             for alias,(source,kind) in PARQUET_FIELDS[name].items():
                 if source in available: select.append('TRY_CAST('+_qid(source)+' AS '+kind+') AS '+_qid(alias))
             if not select: raise QueryValidationError('No approved telemetry columns found.')
+            if name=='new_relic':
+                # Canonical outcome (src/metrics.py); a missing Tracepoint column makes every event Unclassified.
+                tp=_qid('Body.Tracepoint') if 'Body.Tracepoint' in available else 'CAST(NULL AS VARCHAR)'
+                select.append(outcome_sql(tp)+' AS "outcome"')
             c.execute('CREATE VIEW dataset AS SELECT '+','.join(select)+' FROM _raw')
         else:
             d=_load_frame(name)
-            allowed=set(spec['dimensions']+spec['numeric']+(['id'] if name=='applications' else [])+([spec['date']] if spec['date'] else []))
+            if name=='applications':d=annotate_use_cases(d)
+            allowed=set(spec['dimensions']+spec['numeric']+(['id','canonical_row'] if name=='applications' else [])+([spec['date']] if spec['date'] else []))
             d=d[[x for x in d.columns if x in allowed]].copy()
             if spec['date'] and spec['date'] in d:
                 d[spec['date']]=pd.to_datetime(d[spec['date']],errors='coerce',utc=True,format='mixed').dt.tz_localize(None)
