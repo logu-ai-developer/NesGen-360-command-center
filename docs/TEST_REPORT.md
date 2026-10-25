@@ -1,3 +1,5 @@
+> **Superseded (2026-10-23):** this is the V1.0 rebuild report. Current validated test counts are in the Phase History of `CLAUDE.md` (latest full run: 311 passed).
+
 # Rebuild validation report
 Date: 2026-10-20. Baseline: uploaded nesgen360-final-project-bundle.txt.
 

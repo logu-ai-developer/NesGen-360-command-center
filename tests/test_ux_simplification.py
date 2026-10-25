@@ -27,14 +27,13 @@ def test_focus_bullets_only_for_triggered_findings():
 def test_platform_health_order_and_primary_cards(no_gemini):
     write_telemetry(MIXED)
     _, text = page('Platform health')
-    order = [text.index(x) for x in ('Classified-call success rate', 'Most frequent errors', 'Failed classified calls by model', 'Supporting telemetry metrics')]
+    order = [text.index(x) for x in ('Classified-call success rate', 'Most frequent errors', 'Failed classified calls by model', 'Supporting evidence')]
     assert order == sorted(order)
-    assert text.index('kpi-label">Total classified calls') > text.index('Supporting telemetry metrics')
-    assert text.index('kpi-label">Successful classified calls') > text.index('Supporting telemetry metrics')
+    assert text.index('kpi-label">Total classified calls') < text.index('Most frequent errors')   # volume and outcome cards now precede failure analysis
     assert '50.0% of telemetry events could not be classified and are excluded from reliability calculations.' in text
 
 
 def test_replacement_wording_is_not_alarmist(no_gemini):
     _, text = page('Model lifecycle')
-    assert 'Replacement candidates requiring review' in text and 'Alternative model may require additional assessment' in text
+    assert 'Replacement candidates requiring review' not in text and 'Alternative model may require additional assessment' not in text
     assert 'High-risk replacements' not in text and 'itself high risk' not in text

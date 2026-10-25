@@ -253,7 +253,7 @@ def _synthetic_telemetry(window=None):
     by_model['failure_rate']=100.0*by_model.failures/by_model.calls
     by_provider=by_model.groupby('provider',as_index=False)[['calls','failures']].sum().sort_values('failures',ascending=False)
     by_provider['failure_rate']=100.0*by_provider.failures/by_provider.calls
-    errors=pd.DataFrame({'error_code':[503,429,400,403],'error_message':['Model unavailable','Rate limit exceeded','Content filter violation','Internal server error'],'error_source':['Azure OpenAI','AWS Bedrock','GCP Vertex AI','Azure OpenAI'],'occurrences':[int(bad*x) for x in (.3,.28,.22,.2)]})
+    errors=pd.DataFrame({'error_code':[503,429,400,500],'error_message':['Model unavailable','Rate limit exceeded','Content filter violation','Internal server error'],'error_source':['Azure OpenAI','AWS Bedrock','GCP Vertex AI','Azure OpenAI'],'occurrences':[int(bad*x) for x in (.3,.28,.22,.2)]})
     errors=errors[errors.occurrences>0].reset_index(drop=True)
     clients=pd.DataFrame({'model':[m for m,_ in SYNTH_MODELS],'unique_clients':rng.integers(20,400,len(SYNTH_MODELS))})
     stats={**outcome_summary(classified-bad,bad,unc),'p95_ms':float(h.p95_latency_ms.quantile(.95)) if len(h) else None,'undated_events':0}
@@ -274,8 +274,12 @@ def get_telemetry(window=None,demo=False):
     return {'stats':stats,'by_model':by_model,'by_provider':by_provider,'errors':errors,'clients':clients,'mode':mode}
 
 # ---- V1.1: model lifecycle intelligence -------------------------------------------------------
-_RISK_POINTS={'low':15,'medium':8,'high':0}
-_EVIDENCE_POINTS={'current':10,'review due':5,'action required':0}
+_RISK_POINTS={'low':20,'medium':10,'high':0}
+_EVIDENCE_POINTS={'current':20,'review due':10,'action required':0}
+_EVIDENCE_LABELS={'current':'Complete','review due':'Review due','action required':'Incomplete'}
+# Illustrative Decommission Readiness Score: factor -> maximum points (sums to 100). Current-model quality is deliberately excluded.
+SCORE_WEIGHTS={'Replacement candidate exists':35,'Candidate risk level':20,'Time before retirement':25,'Evaluation evidence status':20}
+NO_CANDIDATE='No suitable candidate identified'
 
 def lifecycle_category(stage):
     s=str(stage).casefold()
@@ -283,21 +287,39 @@ def lifecycle_category(stage):
     if 'retire' in s:return 'Retirement'
     return 'Industrialized'
 
-def enrich_models(models,clients=None,today=None):
-    """Add category, unique clients, suggested replacement and decommission readiness (0-100).
+def _has(series,pattern):return series.astype(str).str.contains(pattern,case=False,na=False)
 
-    Replacement is DERIVED (not source data): another model, preferably same provider and family,
-    that is not retiring sooner and not already retired/imminent; best evaluation score wins.
-    Readiness = 40% evaluation score + 20 backup exists + 15 replacement risk + 15 time to retire + 10 evidence."""
+def review_status(d,today):
+    """Review obligation only: Overdue (next review date passed), Review due (status says so), else Current."""
+    due=pd.to_datetime(d['next_review_date'],errors='coerce')<today if 'next_review_date' in d else pd.Series(False,index=d.index)
+    flagged=_has(d['lifecycle_status'],'Review') if 'lifecycle_status' in d else pd.Series(False,index=d.index)
+    return pd.Series(np.select([due,flagged],['Overdue','Review due'],'Current'),index=d.index)
+
+def retirement_status(d):
+    """Retirement stance only: Retired, Scheduled (date, stage or approval), Candidate (migration assess/yes) or None."""
+    retired=_has(d['lifecycle_status'],'Retired|imminent')
+    scheduled=d['retire_date'].notna()|_has(d['stage'],'retire')|_has(d['lifecycle_status'],'Retirement approved')
+    candidate=d['migration_required'].astype(str).isin(['Assess','Yes'])
+    return pd.Series(np.select([retired,scheduled,candidate],['Retired','Scheduled','Candidate'],'None'),index=d.index)
+
+def enrich_models(models,clients=None,today=None):
+    """Add category, unique clients, status concepts, suggested candidate and readiness factors.
+
+    Suggested candidate is DERIVED (not source data, not an approval): never the same model, never retired,
+    scheduled for retirement or unsuitable (High risk or incomplete
+    evidence). Same provider and family preferred; best evaluation score wins; None when nothing qualifies.
+    decommission_readiness is an ILLUSTRATIVE 0-100 score built from SCORE_WEIGHTS."""
     d=models.copy();today=pd.Timestamp(today or pd.Timestamp.now().normalize())
     d['lifecycle_category']=d['stage'].map(lifecycle_category)
     cl=dict(zip(clients.model,clients.unique_clients)) if clients is not None and len(clients) else {}
     d['unique_clients']=d['name'].map(cl)
-    gone=d['lifecycle_status'].astype(str).str.contains('Retired|imminent',case=False)
+    d['review_status']=review_status(d,today);d['retirement_status']=retirement_status(d)
+    evkey=d['evaluation_evidence_status'].astype(str).str.casefold() if 'evaluation_evidence_status' in d else pd.Series('',index=d.index)
+    unsuitable=(d['risk'].astype(str).str.casefold()=='high')|(evkey=='action required')
+    excluded=d['retirement_status'].isin(['Retired','Scheduled'])|unsuitable
     repl=[];rrisk=[];why=[]
     for i,r in d.iterrows():
-        pool=d[(d.index!=i)&~gone]
-        if pd.notna(r['retire_date']):pool=pool[pool['retire_date'].isna()|(pool['retire_date']>r['retire_date'])]
+        pool=d[(d.index!=i)&(d['name']!=r['name'])&~excluded]
         same=pool[pool['provider']==r['provider']];fam=same[same['model_family']==r['model_family']]
         pick=fam if len(fam) else (same if len(same) else pool)
         if len(pick):
@@ -306,8 +328,12 @@ def enrich_models(models,clients=None,today=None):
         else:repl.append(None);rrisk.append(None);why.append(None)
     d['suggested_replacement']=repl;d['replacement_risk']=rrisk;d['replacement_basis']=why;d['has_backup']=d['suggested_replacement'].notna()
     days=(d['retire_date']-today).dt.days
-    time_pts=(days.clip(lower=90,upper=365)-90)/275*15
-    time_pts=time_pts.fillna(15)
-    ev=d.get('evaluation_evidence_status',pd.Series('current',index=d.index)).astype(str).str.casefold().map(_EVIDENCE_POINTS).fillna(5) if 'evaluation_evidence_status' in d else pd.Series(5,index=d.index)
-    d['decommission_readiness']=(0.4*d['evaluation_score'].astype(float)+d['has_backup']*20+d['replacement_risk'].astype(str).str.casefold().map(_RISK_POINTS).fillna(0)+time_pts+ev).round(0).clip(0,100)
+    time_pts=((days.clip(lower=90,upper=365)-90)/275*SCORE_WEIGHTS['Time before retirement']).fillna(SCORE_WEIGHTS['Time before retirement'])
+    ev_pts=evkey.map(_EVIDENCE_POINTS).fillna(10)
+    d['replacement_readiness']=np.where(d['has_backup'],'Candidate identified','No suitable candidate')
+    d['migration_readiness']=d['migration_required'].astype(str).map({'No':'Not required','Assess':'Assessment needed','Yes':'Migration needed'}).fillna('Unknown')
+    d['evidence_completeness']=evkey.map(_EVIDENCE_LABELS).fillna('Not available')
+    urgency=pd.cut(days,[-10**6,0,90,180,10**6],labels=['Past date','Within 90 days','Within 180 days','Later']).astype(object)
+    d['retirement_urgency']=urgency.where(days.notna(),'No date set').where(d['retirement_status']!='Retired','Retired')
+    d['decommission_readiness']=(d['has_backup']*SCORE_WEIGHTS['Replacement candidate exists']+d['replacement_risk'].astype(str).str.casefold().map(_RISK_POINTS).fillna(0)+time_pts+ev_pts).round(0).clip(0,100)
     return d

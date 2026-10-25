@@ -33,7 +33,9 @@ KPI_INFO = {
     'unclassified_events': _kpi('Telemetry events with no success or failure marker. Events with no timestamp are outside every time window and are listed separately as undated.', 'Total events - (Successful + Failed classified calls); share = unclassified / total events x 100.', 'Platform health', 'new_relic', 'unclassified_events', 'Typically LogAnalytics-layout rows without Body.Tracepoint. They are disclosed, not discarded and not assumed successful.'),
     'p95_latency': _kpi('Response time that 95% of classified calls stay under, taken per day.', '95th percentile across the daily P95 latency values, shown in seconds.', 'Platform health', 'health_daily', 'maximum_daily_p95_ms', 'A percentile of daily percentiles over classified calls, not the P95 across all calls.'),
     'request_volume': _kpi('Total log events in the window.', 'Sum of daily event counts (successful + failed + unclassified).', 'Platform health', 'health_daily', 'requests', 'Log events are counted; they are not deduplicated requests.'),
-    'p95_true': _kpi('Response time that 95% of classified calls stay under.', 'QUANTILE_CONT(responseTime, 0.95) across all classified calls.', 'Platform health', 'new_relic', 'p95_latency_ms', 'Unlike the daily trend chart, this is a true P95 over every classified call, not a percentile of daily P95 values.'),
+    'total_events': _kpi('All telemetry events in the window, classified or not.', 'Successful + Failed + Unclassified events.', 'Platform health', 'new_relic', 'events', 'Events with no timestamp are outside every window and are disclosed separately.'),
+    'peak_daily_p95': _kpi('Highest single-day P95 response time in the window.', 'Maximum of the daily P95 latency values, shown in seconds.', 'Platform health', 'health_daily', 'maximum_daily_p95_ms', 'A daily value, not the P95 across all calls. Do not use it for SLA statements.'),
+    'p95_true': _kpi('Response time that 95% of classified calls stay under.', 'QUANTILE_CONT(responseTime, 0.95) across all classified calls.', 'Platform health', 'new_relic', 'p95_latency_ms', 'Unlike the daily trend chart, this is the event-level P95 over every classified call, not a percentile of daily P95 values. Use it for SLA statements.'),
     # User adoption
     'use_cases': _kpi('Canonical use cases onboarded to the platform.', 'Count of distinct application / use-case IDs after the sidebar filters. Repeated IDs collapse to the first row; the use-case name is a display label only.', 'User adoption', 'applications', 'canonical_use_cases', 'Rows with no ID are preserved and counted separately, not invented as use cases.'),
     'uc_sandbox': _kpi('Canonical use cases in the Sandbox stage.', 'Count of distinct IDs where use_case_stage = Sandbox.', 'User adoption', 'applications', 'sandbox_use_cases', 'Stage is a portfolio stage, separate from status, approval and activity.'),
@@ -52,8 +54,8 @@ KPI_INFO = {
     'exceptions': _kpi('Providers whose variance exceeds the review threshold.', 'Count of providers with status = Review (variance above 5%).', 'Chargeback', 'charges', 'maximum_variance_percent', 'Fixed synthetic scenario.'),
     # V1.1 model lifecycle
     'lifecycle_sandbox': _kpi('Models still in sandbox or exploration.', 'Count where governance stage contains Sandbox or Exploration.', 'Model lifecycle', 'models', 'model_rows', 'The current model workbook has no sandbox stage, so 0 is expected for real data.'),
-    'models_with_backup': _kpi('Models that have a suggested replacement.', 'Count of models with a derived replacement (same provider and family preferred, retiring later, not already retired).', 'Model lifecycle', 'models', 'model_rows', 'Replacement is derived by rule, not source data. Confirm with the model owner.'),
-    'readiness': _kpi('How ready a model is to be decommissioned safely.', '40% evaluation score + 20 if a backup exists + 15 replacement risk (Low 15, Medium 8, High 0) + 15 time to retire + 10 evidence status.', 'Model lifecycle', 'models (derived)', 'decommission_readiness', 'Composite for prioritisation; not a formal risk rating.'),
+    'models_with_backup': _kpi('Models that have a suggested candidate.', 'Count of models with a derived candidate (same provider and family preferred). Never the same model, a retired, retiring or unsuitable model.', 'Model lifecycle', 'models', 'model_rows', 'A suggested candidate is derived by rule, not source data, and is not an approval or governance endorsement. Confirm with the model owner.'),
+    'readiness': _kpi('Illustrative indicator of how prepared a model is for decommissioning.', '35 if a suggested candidate exists + up to 20 for candidate risk (Low 20, Medium 10) + up to 25 for time before retirement + up to 20 for evaluation evidence (Complete 20, Review due 10, Incomplete 0). Current-model quality is not included.', 'Model lifecycle', 'models (derived)', 'decommission_readiness', 'Illustrative, not authoritative: it does not measure migration effort, client impact or approval status.'),
 }
 
 
@@ -74,6 +76,8 @@ KPI_WHY = {
     'unclassified_events': 'Shows how much telemetry is outside the reliability figures.',
     'p95_latency': 'Shows how response time trends day by day.',
     'request_volume': 'Gives context for the size of the telemetry window.',
+    'total_events': 'Shows the full telemetry volume behind the classification coverage.',
+    'peak_daily_p95': 'Shows the worst single day for response time.',
     'p95_true': 'Shows the response time most users experience at worst.',
     'use_cases': 'Shows how many use cases the platform supports.',
     'uc_sandbox': 'Shows how many use cases are still being tried out.',
@@ -102,9 +106,11 @@ def executive_focus_bullets(items):
     return [i['title'] for i in items[:5]]
 
 
-def _item(severity, category, title, evidence, source, action, owner):
+def _item(severity, category, title, evidence, source, action, owner, summary='', impact='', recommended_action=''):
+    # summary / impact / recommended_action are the one-sentence Executive card narrative (presentation only).
     return {'severity': severity, 'category': category, 'title': title, 'evidence': evidence,
-            'source': source, 'action': action, 'owner': owner}
+            'source': source, 'action': action, 'owner': owner,
+            'summary': summary, 'impact': impact, 'recommended_action': recommended_action}
 
 
 def build_decision_brief(apps, models, health, charges, alerts):
@@ -121,13 +127,20 @@ def build_decision_brief(apps, models, health, charges, alerts):
                 sev = 'Critical' if worst < 92 else 'High'
                 items.append(_item(sev, 'Reliability', 'Classified-call success rate below target',
                                    f'Classified-call success rate {rate:.2f}% (target {AVAILABILITY_TARGET:.0f}%), worst day {worst:.1f}%; {o["unclassified"]:,} of {o["events"]:,} events unclassified and excluded. Not verified availability.',
-                                   'Dashboard: Platform health', 'Investigate the worst-day failure window and confirm the pre-production fix.', 'Platform Support'))
+                                   'Dashboard: Platform health', 'Investigate the worst-day failure window and confirm the pre-production fix.', 'Platform Support',
+                                   summary=(f'{rate:.2f}% classified-call success rate is below the {AVAILABILITY_TARGET:.0f}% target.' if rate < AVAILABILITY_TARGET
+                                            else f'Worst-day classified-call success rate fell to {worst:.1f}%.'),
+                                   impact=f'{o["failed"]:,} of {o["classified"]:,} classified calls failed.',
+                                   recommended_action='Review the dominant failure contributors.'))
     if charges is not None and len(charges):
         over = charges[pd.to_numeric(charges['variance'], errors='coerce') > CHARGEBACK_THRESHOLD]
         for _, r in over.iterrows():
             items.append(_item('High', 'Financial', f'{r["provider"]} usage variance above threshold',
                                f'Variance {float(r["variance"]):.1f}% vs {CHARGEBACK_THRESHOLD:.0f}% threshold (invoice ${float(r["provider_bill"]):,.0f}, attributed ${float(r["platform_usage"]):,.0f}).',
-                               'Dashboard: Chargeback', f'Reconcile the {r["provider"]} invoice before allocation is approved.', 'FinOps'))
+                               'Dashboard: Chargeback', f'Reconcile the {r["provider"]} invoice before allocation is approved.', 'FinOps',
+                               summary=f'{r["provider"]} invoice is {float(r["variance"]):.1f}% above attributed usage, over the {CHARGEBACK_THRESHOLD:.0f}% threshold.',
+                               impact=f'${float(r["provider_bill"]) - float(r["platform_usage"]):,.0f} of the invoice is not attributed to platform usage.',
+                               recommended_action=f'Reconcile the {r["provider"]} invoice before allocation.'))
     if models is not None and len(models):
         risk = models['risk'].astype(str).str.casefold() == 'high'
         review = models['lifecycle_status'].astype(str).str.contains('Review', case=False)
@@ -136,7 +149,10 @@ def build_decision_brief(apps, models, health, charges, alerts):
         if n:
             items.append(_item('Medium', 'Governance', f'{n} models need a governance decision',
                                f'{int(risk.sum())} high risk, {int(review.sum())} review due, {int(migrate.sum())} migration assessments.',
-                               'Dashboard: Model lifecycle', 'Assign an accountable owner for review and retirement decisions.', 'Model Enablement'))
+                               'Dashboard: Model lifecycle', 'Assign an accountable owner for review and retirement decisions.', 'Model Enablement',
+                               summary=f'{n} models are high risk, due for review or need a migration assessment.',
+                               impact=f'{int(risk.sum())} high risk, {int(review.sum())} review due, {int(migrate.sum())} migration assessments await a decision.',
+                               recommended_action='Assign an owner for each review and retirement decision.'))
     if apps is not None and len(apps):
         canon, _ = canonical_use_cases(apps)
         dormant = int((canon['status_category'] == 'Dormant').sum())
@@ -144,14 +160,20 @@ def build_decision_brief(apps, models, health, charges, alerts):
         if share > DORMANT_SHARE_THRESHOLD:
             items.append(_item('Medium', 'Adoption', f'{dormant} dormant-status use cases',
                                f'{share:.0%} of {len(canon)} canonical use cases carry Dormant status; status field only, no validated last-activity timestamp.',
-                               'Dashboard: User adoption', 'Contact use-case owners to re-engage or retire dormant-status use cases.', 'Regional Product'))
+                               'Dashboard: User adoption', 'Contact use-case owners to re-engage or retire dormant-status use cases.', 'Regional Product',
+                               summary=f'{dormant} use cases ({share:.0%} of the portfolio) carry Dormant status.',
+                               impact='Dormant-status use cases may be carrying cost without delivering value.',
+                               recommended_action='Contact owners to re-engage or retire them.'))
     if alerts is not None and len(alerts):
         crit = alerts[alerts['severity'].astype(str).str.casefold() == 'critical']
         covered = any(i['category'] == 'Reliability' for i in items)
         for _, r in crit.iterrows():
             if covered and 'failure' in str(r['title']).casefold():
                 continue
-            items.append(_item('Critical', 'Operations', str(r['title']), f'{r["metric"]} · status {r["status"]}', 'Dashboard: Alerts', 'Confirm ownership and resolution plan.', str(r['owner'])))
+            items.append(_item('Critical', 'Operations', str(r['title']), f'{r["metric"]} · status {r["status"]}', 'Dashboard: Alerts', 'Confirm ownership and resolution plan.', str(r['owner']),
+                               summary=f'Critical alert: {r["title"]}.',
+                               impact=f'The alert on {r["metric"]} is {str(r["status"]).lower()}.',
+                               recommended_action='Confirm ownership and a resolution plan.'))
     return sorted(items, key=lambda i: _ORDER.get(i['severity'], 9))
 
 
@@ -197,5 +219,29 @@ def model_review_priority(models, today=None):
     migrate = models['migration_required'].astype(str).isin(['Assess', 'Yes']) if 'migration_required' in models else pd.Series(False, index=models.index)
     rank = pd.Series(5, index=models.index)
     for value, mask in ((4, migrate), (3, review), (2, risk), (1, risk & due)):
+        rank[mask] = value
+    return rank
+
+
+# ---- Model Inventory & Decisions: separate status concepts (presentation only) -----------------------
+ATTENTION_LABELS = {1: 'High risk', 2: 'Overdue review', 3: 'Retirement candidate', 4: ''}
+REVIEW_BADGES = {'Overdue': '⏰ Overdue', 'Review due': '🕒 Review due', 'Current': '✔ Current'}
+RETIREMENT_BADGES = {'Candidate': '◐ Candidate', 'Scheduled': '▣ Scheduled', 'Retired': '■ Retired', 'None': '○ None'}
+# Distinct palettes per concept so one colour never stands for two concepts (risk: red/amber/green; review: blue/grey; retirement: purple/grey).
+REVIEW_COLORS = {'Overdue': '#1768ff', 'Review due': '#6a8fd8', 'Current': '#65758a'}
+RETIREMENT_COLORS = {'Candidate': '#7a5af8', 'Scheduled': '#5b3fc4', 'Retired': '#65758a', 'None': '#65758a'}
+
+
+def model_attention_rank(models):
+    """Rank per model: 1 high risk, 2 overdue review, 3 retirement candidate (or scheduled), 4 normal.
+
+    Needs the review_status / retirement_status columns added by enrich_models. Presentation order only.
+    """
+    idx = models.index
+    risk = models['risk'].astype(str).str.casefold() == 'high' if 'risk' in models else pd.Series(False, index=idx)
+    overdue = models['review_status'] == 'Overdue' if 'review_status' in models else pd.Series(False, index=idx)
+    retire = models['retirement_status'].isin(['Candidate', 'Scheduled']) if 'retirement_status' in models else pd.Series(False, index=idx)
+    rank = pd.Series(4, index=idx)
+    for value, mask in ((3, retire), (2, overdue), (1, risk)):
         rank[mask] = value
     return rank

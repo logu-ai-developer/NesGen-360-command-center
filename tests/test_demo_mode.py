@@ -8,7 +8,7 @@ from src.timewindow import WINDOW_DAYS
 from tests.test_phase1_metrics import APP, S, F, no_gemini, write_telemetry  # noqa: F401
 from tests.test_phase2_time import card
 
-KEYS = ('Classified-call success rate', 'Failed classified calls', 'Unclassified events', 'P95 latency (true)')
+KEYS = ('Classified-call success rate', 'Failed classified calls', 'Unclassified events', 'Event-level P95 latency')
 
 
 def real_week():

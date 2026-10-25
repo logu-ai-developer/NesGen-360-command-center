@@ -1,5 +1,5 @@
 from pathlib import Path
-import sys,os,time,uuid,html
+import sys,os,time,uuid,html,logging
 sys.path.insert(0,str(Path(__file__).parent))
 import pandas as pd
 import plotly.express as px
@@ -10,9 +10,11 @@ from src.agent import ask, classify_error
 from src.provider import provider_consumption, PROVIDER_COLORS
 from src.usage import summary as usage_summary, begin as usage_begin, finish as usage_finish
 from src.components import *
+from src import model_assistant
+from src import error_assistant
 from src.config import setting
 # V1.1: KPI definitions + rule-based decision brief (src/insights.py); in-card info replaces the old bottom explainer block
-from src.insights import KPI_INFO, AVAILABILITY_TARGET, build_decision_brief, executive_focus_bullets, priority_breakdown, SEVERITY_ICONS, finding_target, model_review_priority, RISK_BADGES, RISK_COLORS, REVIEW_PRIORITY_LABELS
+from src.insights import KPI_INFO, AVAILABILITY_TARGET, build_decision_brief, executive_focus_bullets, priority_breakdown, SEVERITY_ICONS, finding_target, model_review_priority, RISK_BADGES, RISK_COLORS, REVIEW_PRIORITY_LABELS, model_attention_rank, ATTENTION_LABELS, REVIEW_BADGES, RETIREMENT_BADGES, REVIEW_COLORS, RETIREMENT_COLORS
 from src.timewindow import WINDOW_DAYS, DEFAULT_WINDOW, resolve_window, previous_window, anchor_date, filter_by_window, describe_basis, period_counts, trend_direction, lifecycle_anchor, lifecycle_date_counts
 from src.metrics import health_outcomes, fmt_pct, canonical_use_cases, normalize_stage, normalize_status, active_users_presentation, derived_from, NO_CLASSIFIED_NOTE
 from src.storage import init as init_storage,register_model,set_setting,get_setting,sources
@@ -61,12 +63,17 @@ def window_for(*date_series):
  return resolve_window(time_key,anchor_date(*date_series))
 
 def demo_banner():
- if demo:st.markdown(f'<div class="callout"><b>DEMO SCENARIO DATA</b> {source_badge("synthetic scenario")} Telemetry on this page is deterministic synthetic demonstration data, not real telemetry.</div>',unsafe_allow_html=True)
+ if demo:st.markdown(f'<div class="callout"><b>DEMO SCENARIO DATA</b> {source_badge("synthetic scenario")} Illustrative synthetic scenario: telemetry on this page is deterministic synthetic demonstration data, not real telemetry.</div>',unsafe_allow_html=True)
+
+def status_chip(label,text,color):
+ # Each concept has its own labelled chip; the text and icon carry the meaning, the colour is secondary.
+ return f'<span style="display:inline-block;border:1px solid {color};color:{color};border-radius:6px;padding:.05rem .45rem;margin:.15rem .35rem 0 0;font-size:.78rem"><b>{label}:</b> {html.escape(text)}</span>'
 
 def risk_card(row,attention=''):
- # Subtle left-border indicator (red / amber / green), not a fully coloured row.
- key=str(row.risk).casefold();color=RISK_COLORS.get(key,'#65758a')
- st.markdown(f'<div class="finding" style="border-left-color:{color}"><div class="finding-title">{RISK_BADGES.get(key,html.escape(str(row.risk)))} · {html.escape(str(row["name"]))}</div><div class="finding-meta">{html.escape(attention) or "No review flag"}</div></div>',unsafe_allow_html=True)
+ # Subtle left-border indicator follows Risk only; Review and Retirement are separate chips with their own palettes.
+ key=str(row.risk).casefold();color=RISK_COLORS.get(key,'#65758a');rv=str(row.review_status);rt=str(row.retirement_status)
+ chips=status_chip('Risk',RISK_BADGES.get(key,str(row.risk)),color)+status_chip('Review',REVIEW_BADGES.get(rv,rv),REVIEW_COLORS.get(rv,'#65758a'))+status_chip('Retirement',RETIREMENT_BADGES.get(rt,rt),RETIREMENT_COLORS.get(rt,'#65758a'))
+ st.markdown(f'<div class="finding" style="border-left-color:{color}"><div class="finding-title">{html.escape(str(row["name"]))}</div><div>{chips}</div><div class="finding-meta">{html.escape(attention) and "Attention: "+html.escape(attention) or "No attention flag"}</div></div>',unsafe_allow_html=True)
 
 NL=chr(10)   # KPI notes use line breaks (rendered as <br> by kpi())
 
@@ -109,7 +116,7 @@ def executive():
  if not brief:st.success('No priority findings identified.',icon='✅')
  for n,item in enumerate(brief[:5]):
   target=finding_target(item);c1,c2=st.columns([5,1.6])
-  with c1:st.markdown(f'<div class="finding" style="border-left-color:{SEVERITY_COLORS.get(item["severity"],"#1768ff")}"><div class="finding-title">{SEVERITY_ICONS.get(item["severity"],"⚪")} {html.escape(item["title"])}</div><div class="finding-meta">{html.escape(item["category"])} · {html.escape(item["severity"])} · {html.escape(item["owner"])}</div></div>',unsafe_allow_html=True)
+  with c1:st.markdown(f'<div class="finding" style="border-left-color:{SEVERITY_COLORS.get(item["severity"],"#1768ff")}"><div class="finding-title">{SEVERITY_ICONS.get(item["severity"],"⚪")} {html.escape(item["title"])}</div><div class="finding-line">{html.escape(item["summary"])}</div><div class="finding-line"><b>Impact:</b> {html.escape(item["impact"])}</div><div class="finding-line"><b>Action:</b> {html.escape(item["recommended_action"])}</div><div class="finding-meta">{html.escape(item["severity"])} · {html.escape(item["category"])} · {html.escape(item["owner"])}</div></div>',unsafe_allow_html=True)
   with c2:st.button(f'Open {target} →',key=f'go_{n}',on_click=go_to,args=(target,),width='stretch')
  group_title('Key metrics');cols=st.columns(4)
  undated=get_telemetry(hw,demo)['stats']['undated_events'];o=health_outcomes(h);tdir=trend_direction(o['success_pct'],health_outcomes(filter_by_window(h_all,'date',previous_window(hw)))['success_pct'],abs_tol=.5)
@@ -141,7 +148,7 @@ def executive():
 
 def lifecycle():
  tel=get_telemetry();m0=enrich_models(filtered_models(),tel['clients']);d=m0
- header('Model lifecycle','Responsible AI governance','Manage exploration, validation, industrialization, review and retirement with accountable evidence.',source=sm(filtered_models()))
+ header('Model Inventory & Decisions','Responsible AI governance','Model inventory and governance actions: risk, review obligations and retirement are shown separately, with accountable evidence.',source=sm(filtered_models()))
  lw=resolve_window(time_key,lifecycle_anchor(m0));lc=lifecycle_date_counts(m0,lw)
  compact_basis(lw,sm(filtered_models()))
  with st.expander('Data basis'):st.caption(describe_basis(lw,'lifecycle dates (review, retirement, migration)',sm(filtered_models()))+' · models with a date in the window: '+(' · '.join(f'{k} {v}' for k,v in lc.items()) or 'no lifecycle dates in this source')+' · the KPIs below are an inventory snapshot, not windowed')
@@ -150,8 +157,8 @@ def lifecycle():
  if cat!='All':d=d[d.lifecycle_category==cat]
  if stage!='All':d=d[d.stage==stage]
  if search:d=d[d.name.astype(str).str.contains(search,case=False,na=False)|d.model_family.astype(str).str.contains(search,case=False,na=False)]
- rank=model_review_priority(d);d=d.loc[rank.sort_values(kind='stable').index]   # review candidates first; presentation order only
- inv=d.assign(attention=rank.map(REVIEW_PRIORITY_LABELS),risk=d.risk.astype(str).str.casefold().map(RISK_BADGES).fillna(d.risk))
+ rank=model_attention_rank(d);d=d.loc[rank.sort_values(kind='stable').index]   # high risk, overdue review, retirement candidate, then the rest; presentation order only
+ inv=d.assign(attention=rank.map(ATTENTION_LABELS),risk=d.risk.astype(str).str.casefold().map(RISK_BADGES).fillna(d.risk),review_status=d.review_status.map(REVIEW_BADGES),retirement_status=d.retirement_status.map(RETIREMENT_BADGES),suggested_replacement=d.suggested_replacement.fillna(NO_CANDIDATE))
  mode=sm(filtered_models());n_local=int((m0.get('record_origin',pd.Series(dtype=str))=='locally registered').sum())
  if n_local:st.markdown(f'{source_badge("locally registered")} {n_local} model record(s) were created through the local POC registration workflow and are included below; they are not source-system records.',unsafe_allow_html=True)
  cols=st.columns(4)
@@ -159,19 +166,46 @@ def lifecycle():
  with cols[1]:kpi('Industrialized',int((d.lifecycle_category=='Industrialized').sum()),'Approved operating models',KPI_INFO['industrialized'],mode)
  with cols[2]:kpi('Sandbox',int((d.lifecycle_category=='Sandbox').sum()),'Exploration / validation',KPI_INFO['lifecycle_sandbox'],mode)
  with cols[3]:kpi('Review due',int(d.lifecycle_status.astype(str).str.contains('Review',case=False).sum()),'Evidence refresh required',KPI_INFO['review_due'],mode)
- cols=st.columns(4)
+ cols=st.columns(3)
  with cols[0]:kpi('Retirement / migrate',int(d.migration_required.astype(str).isin(['Assess','Yes']).sum()),'Decision ownership required',KPI_INFO['retirement'],mode)
- with cols[1]:kpi('With backup model',f"{int(d.has_backup.sum())} / {len(d)}",'Suggested replacement exists',KPI_INFO['models_with_backup'],derived_from(mode),tone='ok' if len(d) and d.has_backup.all() else 'warn')
- with cols[2]:kpi('Avg decommission readiness',f"{d.decommission_readiness.mean():.0f} / 100" if len(d) else 'n/a','Higher = safer to retire',KPI_INFO['readiness'],derived_from(mode))
- with cols[3]:kpi('Replacement candidates requiring review',int((d.replacement_risk.astype(str).str.casefold()=='high').sum()),'Alternative model may require additional assessment',KPI_INFO['readiness'],derived_from(mode),tone='warn')
- with st.expander('How is evaluation / readiness scored?'):
-  st.markdown("**Evaluation score** comes from the model workbook (`score_source`: synthetic POC composite).  \n**Decommission readiness (0-100)** = 40% evaluation score + 20 if a backup model exists + up to 15 for the backup's risk level (Low 15, Medium 8, High 0) + up to 15 for time left before retirement + up to 10 for evaluation evidence status (Current 10, Review due 5, Action required 0).  \n**Suggested replacement** is derived by rule: same provider and family preferred, retiring later than this model, not already retired; best evaluation score wins. **Unique clients** is the number of distinct API client IDs seen in telemetry for the model, not named people.")
- st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Model inventory and decisions');st.caption('Review candidates first: high risk + overdue review, high risk, review due, migration required, then the rest.');st.dataframe(inv[[c for c in ['attention','name','provider','model_family','lifecycle_category','stage','owner','evaluation_score','risk','unique_clients','suggested_replacement','replacement_risk','decommission_readiness','lifecycle_status','next_review_date','retire_date','record_origin'] if c in inv]].head(100),hide_index=True,width='stretch',height=380);st.markdown('</div>',unsafe_allow_html=True)
+ with cols[1]:kpi('With suggested candidate',f"{int(d.has_backup.sum())} / {len(d)}",'Suggested candidate exists (not an approval)',KPI_INFO['models_with_backup'],derived_from(mode),tone='ok' if len(d) and d.has_backup.all() else 'warn')
+ with cols[2]:kpi('Avg illustrative readiness score',f"{d.decommission_readiness.mean():.0f} / 100" if len(d) else 'n/a','Illustrative only, see scoring below',KPI_INFO['readiness'],derived_from(mode))
+ with st.expander('How is the Illustrative Decommission Readiness Score built?'):
+  st.markdown("**Illustrative Decommission Readiness Score (0-100)** is a prioritisation aid, not an authoritative or approved measure.")
+  st.table(pd.DataFrame({'Contributing factor':list(SCORE_WEIGHTS),'Maximum points':list(SCORE_WEIGHTS.values()),'Scoring':['Full points when a suggested candidate exists','Candidate risk: Low 20, Medium 10 (High candidates are never suggested)','Scaled from 90 to 365 days before retirement; full points when no date is set','Evidence: Complete 20, Review due 10, Incomplete 0, not available 10']}))
+  st.caption("Limitations: current-model quality is not part of the score. It does not measure migration effort, client impact, cost or approval status. A suggested candidate is derived by rule (same provider and family preferred, best evaluation score) and is never the same model, a retired or retiring model, a High-risk model, or a model with incomplete evidence. When none qualifies the field reads 'No suitable candidate identified'. Unique clients is the number of distinct API client IDs seen in telemetry, not named people.")
+ st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Model inventory and decisions');st.caption('Review candidates first: high risk + overdue review, high risk, review due, migration required, then the rest.');st.dataframe(inv[[c for c in ['attention','name','provider','model_family','lifecycle_category','stage','owner','evaluation_score','risk','review_status','retirement_status','unique_clients','suggested_replacement','replacement_risk','replacement_readiness','migration_readiness','evidence_completeness','retirement_urgency','decommission_readiness','lifecycle_status','next_review_date','retire_date','record_origin'] if c in inv]].head(100),hide_index=True,width='stretch',height=380);st.markdown('</div>',unsafe_allow_html=True)
  l,r=st.columns([1.3,1])
- with l:st.plotly_chart(px.bar(d,x='name',y='decommission_readiness',color='risk',color_discrete_map={'Low':'#39b98a','Medium':'#f2a93b','High':'#df4b55'},title='Decommission readiness'),width='stretch',config={'displayModeBar':False,'displaylogo':False,'responsive':True})
+ with l:st.plotly_chart(px.bar(d,x='name',y='decommission_readiness',color='risk',color_discrete_map={'Low':'#39b98a','Medium':'#f2a93b','High':'#df4b55'},title='Illustrative decommission readiness score'),width='stretch',config={'displayModeBar':False,'displaylogo':False,'responsive':True})
  with r:
   selected=st.selectbox('Open decision record',d.name.tolist() if len(d) else ['No records']);
-  if len(d):row=d[d.name==selected].iloc[0];risk_card(row,REVIEW_PRIORITY_LABELS[int(rank[row.name])]);st.markdown(f"**Owner:** {row.owner}  \n**Lifecycle:** {row.lifecycle_status}  \n**Risk:** {row.risk}  \n**Reason:** {row.risk_reason}  \n**Migration:** {row.migration_required}  \n**Suggested replacement:** {row.suggested_replacement} ({row.replacement_basis}, risk {row.replacement_risk})  \n**Unique API clients:** {'N/A' if pd.isna(row.unique_clients) else int(row.unique_clients)}  \n**Readiness:** {row.decommission_readiness:.0f}/100  \n**Next review:** {row.next_review_date}")
+  if len(d):
+   row=d[d.name==selected].iloc[0];risk_card(row,ATTENTION_LABELS[int(rank[row.name])])
+   cand=f"{row.suggested_replacement} ({row.replacement_basis}, risk {row.replacement_risk})" if pd.notna(row.suggested_replacement) else NO_CANDIDATE
+   st.markdown("  "+NL.join(["**Owner:** "+str(row.owner)+"  ","**Lifecycle:** "+str(row.lifecycle_status)+"  ","**Risk reason:** "+str(row.risk_reason)+"  ","**Next review:** "+str(row.next_review_date)+"  ","**Suggested candidate:** "+cand+"  ","**Unique API clients:** "+("N/A" if pd.isna(row.unique_clients) else str(int(row.unique_clients)))]).strip())
+   st.markdown(NL.join(["**Decommission readiness factors**  ","Replacement readiness: "+str(row.replacement_readiness)+"  ","Migration readiness: "+str(row.migration_readiness)+"  ","Evidence completeness: "+str(row.evidence_completeness)+"  ","Retirement urgency: "+str(row.retirement_urgency)+"  ",f"Illustrative Decommission Readiness Score: {row.decommission_readiness:.0f}/100 (illustrative, not authoritative)"]))
+
+ # Phase 4B: Model Evaluation Assistant. Evidence first, AI only on an explicit click, advisory only.
+ st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Model Evaluation Assistant');st.caption('Review the evidence first. AI interpretation is optional and runs only when you select Analyze Model.')
+ if len(d):
+  mea_name=st.selectbox('Model',d.name.tolist(),key='mea_model');mea_row=d[d.name==mea_name].iloc[0];mea_evidence=model_assistant.build_evidence(mea_row)
+  st.table(pd.DataFrame({'Evidence':list(mea_evidence)[1:],'Value':list(mea_evidence.values())[1:]}))
+  if st.button('Analyze Model',key='mea_analyze'):
+   try:
+    with st.spinner('Interpreting the evidence above...'):st.session_state['mea_result']={'model':mea_name,'sections':model_assistant.analyze(mea_evidence,llm_model_name)}
+   except Exception as exc:
+    _detail=str(getattr(exc,'message',None) or exc)[:300];_k=os.getenv('GEMINI_API_KEY')
+    if _k:_detail=_detail.replace(_k,'[REDACTED]')
+    logging.getLogger('nesgen.agent').warning('Model assistant unavailable type=%s detail=%s',type(exc).__name__,_detail)
+    st.session_state['mea_result']={'model':mea_name,'error':True}
+  res=st.session_state.get('mea_result')
+  if res and res['model']==mea_name:   # a result belongs to the model it was run for; changing the dropdown never calls the model
+   if res.get('error'):st.warning(model_assistant.UNAVAILABLE)
+   else:
+    st.markdown('**AI Interpretation**')
+    for key,label in model_assistant.SECTIONS:st.markdown(f"**{label}**  "+NL+res['sections'][key])
+  st.caption(model_assistant.ADVISORY)
+ st.markdown('</div>',unsafe_allow_html=True)
 
 def health():
  h=get_health(demo);hw=window_for(h.date);d=filter_by_window(h,'date',hw);tel=get_telemetry(hw,demo);ts=tel['stats'];tm=tel['mode']
@@ -186,46 +220,93 @@ def health():
   with st.expander('Learn more'):st.markdown(f"{ts['unclassified']:,} of {ts['events']:,} events ({fmt_pct(ts['unclassified_pct'])}) have no success or failure marker. They are excluded from classified-call success and failure rates and are never counted as successful.")
  note=lambda pct,what:f"{fmt_pct(pct)} of {what}" if ts['classified'] else NO_CLASSIFIED_NOTE
  p95d=d.p95_latency_ms.quantile(.95) if len(d) else float('nan');chart_cfg={'displayModeBar':False,'displaylogo':False,'responsive':True}
- # Section 1: reliability status (telemetry-wide; the environment filter does not apply to the cards)
- group_title('Reliability status');cols=st.columns(3)
- with cols[0]:kpi('Classified-call success rate',fmt_pct(ts['success_pct']),'Target ≥ 98% · not verified availability' if ts['classified'] else NO_CLASSIFIED_NOTE,KPI_INFO['calls_success_rate'],tm,tone=rate_tone(ts['success_pct']))
+ # Phase 5A: Volume, Outcomes, Performance, Failure Analysis, Supporting evidence. Presentation only; every value comes from the same helpers as before.
+ env_scope=f'Environment filter: {environment}' if environment!='All' else 'Environment filter: All'
+ env_charts='synthetic and demo telemetry carry a per-environment breakdown, so the Environment filter narrows the charts there; the real telemetry aggregates are not broken down by environment, so on real data the Environment filter does not change this page'
+ st.caption('Scope: KPI cards are telemetry-wide for the selected time window and are not affected by the Environment filter. Charts follow the selected time window; '+env_charts+'. Correlated operational alerts are a fixed snapshot that ignores every filter. '+env_scope+'.')
+ # Section 1: volume
+ group_title('Volume','Telemetry-wide · time window only');cols=st.columns(3)
+ cov=100.0*ts['classified']/ts['events'] if ts['events'] else None
+ with cols[0]:kpi('Total events',f"{ts['events']:,}",'All telemetry events in scope',KPI_INFO['total_events'],tm)
+ with cols[1]:kpi('Total classified calls',f"{ts['classified']:,}",f"{fmt_pct(cov)} of events classified" if cov is not None else 'No events in scope',KPI_INFO['classified_calls'],tm)
+ with cols[2]:kpi('Unclassified events',f"{ts['unclassified']:,}",f"{fmt_pct(ts['unclassified_pct'])} of events · excluded from success and failure rates" if ts['events'] else 'No events in scope',KPI_INFO['unclassified_events'],'unclassified telemetry present' if ts['unclassified'] else tm,tone='warn' if ts['unclassified'] else None)
+ # Section 2: outcomes (classified calls only; no latency here)
+ group_title('Outcomes','Classified calls only · telemetry-wide');cols=st.columns(3)
+ with cols[0]:kpi('Successful classified calls',f"{ts['success']:,}",note(ts['success_pct'],'classified calls'),KPI_INFO['calls_success'],tm)
  with cols[1]:kpi('Failed classified calls',f"{ts['failed']:,}",note(ts['failure_pct'],'classified calls'),KPI_INFO['calls_failed'],tm,tone=rate_tone(ts['success_pct']) if rate_tone(ts['success_pct'])=='bad' else None)
- with cols[2]:kpi('P95 latency (true)',f"{ts['p95_ms']/1000:.2f}s" if ts['p95_ms'] else 'N/A','95th percentile over classified calls',KPI_INFO['p95_true'],tm)
- st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Daily classified-call success rate (%)');st.plotly_chart(px.line(d,x='date',y='success_rate',range_y=[90,100]),width='stretch',config=chart_cfg);st.markdown('</div>',unsafe_allow_html=True)
- # Section 2: investigation areas, ranked bars first; evidence tables stay available in an expander
- group_title('Investigation areas','Ranked by failed classified calls')
- er=tel['errors'].head(10).copy();bm=tel['by_model'].sort_values('failures',ascending=False).head(10);bp=tel['by_provider'].sort_values('failures',ascending=False)
- st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Most frequent errors')
+ with cols[2]:kpi('Classified-call success rate',fmt_pct(ts['success_pct']),'Target ≥ 98% · not verified availability' if ts['classified'] else NO_CLASSIFIED_NOTE,KPI_INFO['calls_success_rate'],tm,tone=rate_tone(ts['success_pct']))
+ oc=d.assign(total_calls=d.successful_calls+d.failed_calls).rename(columns={'total_calls':'Total Calls','successful_calls':'Successful Classified Calls','failed_calls':'Failed Classified Calls'})
+ oc_fig=px.line(oc,x='date',y=['Total Calls','Successful Classified Calls','Failed Classified Calls'],color_discrete_map={'Total Calls':'#1768ff','Successful Classified Calls':'#39b98a','Failed Classified Calls':'#df4b55'}).update_layout(legend_title_text=None,yaxis_title='Classified calls',legend_orientation='h')
+ st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Daily Classified Call Outcomes');st.caption('Selected time window and environment. Total Calls = successful + failed classified calls; unclassified events are excluded. The success-rate card above is the primary summary.');st.plotly_chart(oc_fig,width='stretch',config=chart_cfg);st.markdown('</div>',unsafe_allow_html=True)
+ # Section 3: performance (event-level P95 is the SLA figure; daily values are trend context only)
+ group_title('Performance','Event-level P95 is the SLA figure · daily values are trend context');cols=st.columns(3)
+ peak=d.p95_latency_ms.max() if len(d) else float('nan')
+ with cols[0]:kpi('Event-level P95 latency',f"{ts['p95_ms']/1000:.2f}s" if ts['p95_ms'] else 'N/A','95th percentile over classified calls · telemetry-wide',KPI_INFO['p95_true'],tm)
+ with cols[1]:kpi('P95 latency (daily trend)',f"{p95d/1000:.2f}s" if p95d==p95d else 'N/A','95th percentile of daily P95s · selected time window',KPI_INFO['p95_latency'],sm(h))
+ with cols[2]:kpi('Peak daily P95',f"{peak/1000:.2f}s" if peak==peak else 'N/A','Highest single-day P95 · selected time window',KPI_INFO['peak_daily_p95'],sm(h))
+ with st.expander('How is P95 latency evaluated?'):
+  st.markdown(f"**Event-level P95 latency** (first card) = 95th percentile of `responseTime` over every classified call: **{(ts['p95_ms'] or 0):,.0f} ms**.  \n**Daily P95 trend** = the chart below takes each day's P95, and the second card takes the 95th percentile of those daily values: **{(p95d if p95d==p95d else 0):,.0f} ms**. **Peak daily P95** is the highest of the daily values. These differ because a percentile of daily percentiles is not the P95 of all calls. Use the event-level P95 for SLA statements, never the daily values.  \nUnit is milliseconds as logged by the gateway.")
+ st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Daily P95 trend');st.caption('Follows the selected time window. Trend context only, not an SLA figure.');st.plotly_chart(px.line(d,x='date',y='p95_latency_ms'),width='stretch',config=chart_cfg);st.markdown('</div>',unsafe_allow_html=True)
+ # Section 4: failure analysis, ranked bars; coordinated only through data the telemetry really carries (model rows carry their provider)
+ group_title('Failure analysis','Ranked by failed classified calls')
+ er=tel['errors'].head(10).copy();bm_all=tel['by_model'].sort_values('failures',ascending=False);bp=tel['by_provider'].sort_values('failures',ascending=False)
+ focus=st.selectbox('Focus provider',['All providers']+bp.provider.astype(str).tolist(),key='ph_provider_focus',help='Filters the failed-calls-by-model view to one provider. Errors are not mapped to models or providers by the telemetry, so the error view does not change.')
+ bm=(bm_all if focus=='All providers' else bm_all[bm_all.provider.astype(str)==focus]).head(10)
+ st.caption('Navigation: start with the provider ranking, pick a provider to see its models, then read the error view. Limitation: the telemetry links each model to its provider, but errors are not linked to a model or provider, so a model → provider → error drill-down is not available. Error source is shown exactly as logged.')
+ st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Most frequent errors');st.caption('All failed classified calls in scope, independent of the provider focus.')
  if len(er):
   er['error']=er.error_code.astype(str)+' · '+er.error_message.astype(str).str.slice(0,40);st.plotly_chart(px.bar(er,x='occurrences',y='error',orientation='h',hover_data=['error_source']).update_layout(yaxis=dict(autorange='reversed',title=None),height=max(240,36*len(er)+60),margin=dict(l=10,r=10,t=10,b=10)),width='stretch',config=chart_cfg)
  else:st.info('No failed classified calls in this window.')
  st.markdown('</div>',unsafe_allow_html=True)
  l,r=st.columns([1.4,1])
  with l:
-  st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Failed classified calls by model')
+  st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Failed classified calls by model'+('' if focus=='All providers' else f' · {focus}'))
   if len(bm):st.plotly_chart(px.bar(bm,x='failures',y='model',color='provider',orientation='h',hover_data=['calls','failure_rate']).update_layout(yaxis=dict(autorange='reversed',title=None),height=max(240,36*len(bm)+80),margin=dict(l=10,r=10,t=10,b=10),legend_orientation='h'),width='stretch',config=chart_cfg)
   else:st.info('No classified calls in this window.')
   st.markdown('</div>',unsafe_allow_html=True)
  with r:
   st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Failed classified calls by provider')
-  if len(bp):st.plotly_chart(px.bar(bp,x='failures',y='provider',color='provider',orientation='h',hover_data=['calls','failure_rate']).update_layout(yaxis=dict(autorange='reversed',title=None),height=max(240,36*len(bm)+80),margin=dict(l=10,r=10,t=10,b=10),showlegend=False),width='stretch',config=chart_cfg)
+  if len(bp):st.plotly_chart(px.bar(bp,x='failures',y='provider',color='provider',orientation='h',hover_data=['calls','failure_rate']).update_layout(yaxis=dict(autorange='reversed',title=None),height=max(240,36*len(bm_all.head(10))+80),margin=dict(l=10,r=10,t=10,b=10),showlegend=False),width='stretch',config=chart_cfg)
   else:st.info('No classified calls in this window.')
   st.markdown('</div>',unsafe_allow_html=True)
- with st.expander('Evidence tables (errors, models, providers)'):
+ # Section 5: Error Analysis Assistant (Phase 5B V1). Evidence first, AI only on an explicit click, advisory and explanation only.
+ st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('Error Analysis Assistant');st.caption('Optional. Review the evidence first. AI interpretation runs only when you select Analyze Failures. It explains observed failures and never claims a cause.')
+ ea_providers=bp.provider.astype(str).tolist()
+ ea_scope=st.selectbox('Focus',['Overall window','Provider','Provider + Model'],key='ea_scope',help='Overall window, one provider, or one provider and model. Error code and environment are not offered: those relationships are not in the approved evidence model.')
+ ea_provider=st.selectbox('Provider',ea_providers,key='ea_provider') if ea_scope!='Overall window' and ea_providers else None
+ ea_model=None
+ if ea_scope=='Provider + Model' and ea_provider:
+  ea_models=bm_all[bm_all.provider.astype(str)==ea_provider].model.astype(str).tolist()
+  ea_model=st.selectbox('Model',ea_models,key='ea_model_focus') if ea_models else None
+ ea_focus=error_assistant.make_focus(ea_scope,ea_provider,ea_model)
+ ea_evidence=error_assistant.build_evidence(tel,d,hw,ea_focus)
+ st.table(pd.DataFrame({'Evidence':list(ea_evidence),'Value':[str(v) for v in ea_evidence.values()]}))
+ if st.button('Analyze Failures',key='ea_analyze'):
+  try:
+   with st.spinner('Interpreting the evidence above...'):st.session_state['ea_result']={'focus':ea_focus,'sections':error_assistant.analyze(ea_evidence,llm_model_name)}
+  except Exception as exc:
+   _detail=str(getattr(exc,'message',None) or exc)[:300];_k=os.getenv('GEMINI_API_KEY')
+   if _k:_detail=_detail.replace(_k,'[REDACTED]')
+   logging.getLogger('nesgen.agent').warning('Error assistant unavailable type=%s detail=%s',type(exc).__name__,_detail)
+   st.session_state['ea_result']={'focus':ea_focus,'error':True}
+ ea_res=st.session_state.get('ea_result')
+ if ea_res and ea_res['focus']==ea_focus:   # a result belongs to the focus it ran for; changing focus hides the stale result without a new call
+  if ea_res.get('error'):st.warning(error_assistant.UNAVAILABLE)
+  else:
+   st.markdown('**AI Interpretation**')
+   for key,label in error_assistant.SECTIONS:st.markdown(f"**{label}**  "+NL+ea_res['sections'][key])
+ st.caption(error_assistant.ADVISORY)
+ st.markdown('</div>',unsafe_allow_html=True)
+ # Section 6: supporting evidence
+ group_title('Supporting evidence')
+ with st.expander('View supporting evidence'):
   rename={'calls':'classified_calls','failures':'failed_classified_calls','failure_rate':'failure_rate_pct_of_classified'}
   st.dataframe(tel['errors'].head(15),hide_index=True,width='stretch');st.caption('Error code, message and provider are shown exactly as logged; combinations can look inconsistent in synthetic telemetry.')
   st.dataframe(tel['by_model'].sort_values('failures',ascending=False).head(15).assign(failure_rate=lambda x:x.failure_rate.round(2)).rename(columns=rename),hide_index=True,width='stretch')
   st.dataframe(bp.assign(failure_rate=bp.failure_rate.round(2)).rename(columns=rename),hide_index=True,width='stretch');st.caption('Failures by provider and by model. Unclassified events are not attributed to any model; a missing model name is shown as Unknown.')
- # Section 3: supporting metrics
- group_title('Supporting telemetry metrics');cols=st.columns(4)
- with cols[0]:kpi('Unclassified events',f"{ts['unclassified']:,}",f"{fmt_pct(ts['unclassified_pct'])} of events · excluded from success and failure rates" if ts['events'] else 'No events in scope',KPI_INFO['unclassified_events'],'unclassified telemetry present' if ts['unclassified'] else tm,tone='warn' if ts['unclassified'] else None)
- with cols[1]:kpi('P95 latency (daily trend)',f"{p95d/1000:.2f}s" if p95d==p95d else 'N/A','95th percentile of daily P95s',KPI_INFO['p95_latency'],sm(h))
- with cols[2]:kpi('Total classified calls',f"{ts['classified']:,}",f"{ts['events']:,} events in scope",KPI_INFO['classified_calls'],tm)
- with cols[3]:kpi('Successful classified calls',f"{ts['success']:,}",note(ts['success_pct'],'classified calls'),KPI_INFO['calls_success'],tm)
- with st.expander('How is P95 latency evaluated?'):
-  st.markdown(f"**True P95** (card above) = 95th percentile of `responseTime` over every classified call: **{(ts['p95_ms'] or 0):,.0f} ms**.  \n**Daily-trend P95** = the chart below takes each day's P95, and the card takes the 95th percentile of those daily values: **{(p95d if p95d==p95d else 0):,.0f} ms**. These differ because a percentile of daily percentiles is not the P95 of all calls. Use the true P95 for SLA statements.  \nUnit is milliseconds as logged by the gateway.")
- st.markdown('<div class="panel">',unsafe_allow_html=True);panel_title('P95 latency (daily)');st.plotly_chart(px.line(d,x='date',y='p95_latency_ms'),width='stretch',config=chart_cfg);st.markdown('</div>',unsafe_allow_html=True)
- with st.expander('Correlated operational alerts'):st.dataframe(synthetic_alerts(),hide_index=True,width='stretch')
+ with st.expander('Correlated operational alerts · Illustrative synthetic scenario (fixed snapshot)'):
+  st.caption('Illustrative synthetic scenario: fixed demonstration alerts, not live telemetry. They do not follow the time window, the Environment filter or the Data mode.')
+  st.dataframe(synthetic_alerts(),hide_index=True,width='stretch')
 
 def adoption():
  # V1.1: use-case view (stage, segment, active users) instead of user counts; fields follow docs/DATA_CONTRACTS.md

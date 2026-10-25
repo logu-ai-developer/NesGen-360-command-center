@@ -77,3 +77,16 @@ def test_note_line_breaks_render_as_br(monkeypatch):
     monkeypatch.setattr(components.st, 'markdown', lambda body, **k: shown.append(body))
     components.kpi('L', 'V', 'line one' + chr(10) + 'line two')
     assert 'line one<br>line two' in shown[0]
+
+
+def test_findings_carry_executive_narrative():
+    import pandas as pd
+    from src.insights import build_decision_brief
+    health = pd.DataFrame({'successful_calls': [95], 'failed_calls': [5], 'unclassified_events': [0],
+                           'success_rate': [95.0], 'requests': [100]})
+    items = build_decision_brief(None, None, health, None, None)
+    assert items
+    for i in items:
+        for k in ('summary', 'impact', 'recommended_action'):
+            assert i[k] and i[k].count('. ') == 0
+    assert '5 of 100 classified calls failed' in items[0]['impact']

@@ -1,3 +1,5 @@
+> **Partly superseded (2026-10-23):** the "Suggested replacement" rule and the "Decommission readiness" formula below describe V1.1. Phase 4A replaced them: candidates exclude same, retired, scheduled, approved-retirement, High-risk and incomplete-evidence models with no score threshold, and the score is the "Illustrative Decommission Readiness Score" (weights 35 / 20 / 25 / 20, no evaluation-score term). See `CLAUDE.md` and `docs/WORKING_LOG.md`.
+
 # NesGen 360 V1.1: what changed so far
 
 Repo: `nesgen-360-final-v1`. Status: all 133 tests pass. The app was not checked in a browser by me, and a "This page could not render" error you reported has not been reproduced (see the last section).

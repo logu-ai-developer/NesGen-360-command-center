@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 from src import insights
-from src.insights import (finding_target, model_review_priority, REVIEW_PRIORITY_LABELS, SEVERITY_ICONS, RISK_BADGES, FINDING_TARGETS)
+from src.insights import (finding_target, model_review_priority, REVIEW_PRIORITY_LABELS, SEVERITY_ICONS, RISK_BADGES, FINDING_TARGETS, ATTENTION_LABELS, model_attention_rank)
 from tests.test_phase1_metrics import APP, no_gemini  # noqa: F401
 
 
@@ -65,20 +65,35 @@ def test_executive_metadata_is_compact_with_details_in_a_drawer(no_gemini):
 # ---- Platform Health -------------------------------------------------------------------------------
 def test_platform_health_sections_and_card_placement(no_gemini):
     _, text = render('Platform health')
-    marks = [text.index('group-title">' + x) for x in ('Reliability status', 'Investigation areas', 'Supporting telemetry metrics')]
+    names = ('Volume', 'Outcomes', 'Performance', 'Failure analysis', 'Supporting evidence')
+    marks = [text.index('group-title">' + x) for x in names] + [len(text)]
     assert marks == sorted(marks)
-    reliability, investigation, supporting = text[marks[0]:marks[1]], text[marks[1]:marks[2]], text[marks[2]:]
-    for label in ('Classified-call success rate', 'Failed classified calls', 'P95 latency (true)'):
-        assert f'kpi-label">{label}<' in reliability
-    for label in ('Unclassified events', 'P95 latency (daily trend)', 'Total classified calls', 'Successful classified calls'):
-        assert f'kpi-label">{label}<' in supporting and f'kpi-label">{label}<' not in reliability
+    sec = dict(zip(names, (text[marks[i]:marks[i + 1]] for i in range(5))))
+    groups = {'Volume': ('Total events', 'Total classified calls', 'Unclassified events'),
+              'Outcomes': ('Successful classified calls', 'Failed classified calls', 'Classified-call success rate'),
+              'Performance': ('Event-level P95 latency', 'P95 latency (daily trend)', 'Peak daily P95')}
+    for name, labels in groups.items():
+        for label in labels:
+            assert f'kpi-label">{label}<' in sec[name]
+            assert sum(f'kpi-label">{label}<' in sec[o] for o in names) == 1          # each card appears once, in its own section
+    assert 'P95' not in sec['Outcomes'].replace('Daily classified', '') and 'latency' not in sec['Outcomes'].lower()
     for title in ('Most frequent errors', 'Failed classified calls by model', 'Failed classified calls by provider'):
-        assert title in investigation
+        assert title in sec['Failure analysis']
+    assert 'P95 latency (true)' not in text and 'True P95' not in text and 'Supporting telemetry metrics' not in text
+
+
+def test_platform_health_scope_and_scenario_labels(no_gemini):
+    at, text = render('Platform health')
+    assert 'not affected by the Environment filter' in text and 'fixed snapshot' in text
+    assert any('Illustrative synthetic scenario' in e.label for e in at.expander)
+    assert 'not available' in text and 'errors are not linked to a model or provider' in text      # drill-down limitation is stated
+    assert any(s.key == 'ph_provider_focus' for s in at.selectbox)
 
 
 def test_platform_health_keeps_evidence_tables_in_an_expander(no_gemini):
     at, text = render('Platform health')
-    assert any('Evidence tables' in e.label for e in at.expander)
+    assert any(e.label == 'View supporting evidence' for e in at.expander)
+    assert not any('Evidence tables' in e.label for e in at.expander)
     assert re.search(WINDOW_LINE, text)
 
 
@@ -97,8 +112,10 @@ def test_lifecycle_labels_sorting_and_risk_badges(no_gemini):
     assert 'Models in inventory' in text and 'Model inventory and decisions' in text
     assert 'Governed models' not in text and 'Governance portfolio' not in text
     table = next(df.value for df in at.dataframe if 'attention' in df.value.columns)
-    ranks = [next((k for k, v in REVIEW_PRIORITY_LABELS.items() if v == a), 5) for a in table['attention'].fillna('')]
-    assert ranks == sorted(ranks)                                                # review candidates first
+    ranks = [next((k for k, v in ATTENTION_LABELS.items() if v == a), 4) for a in table['attention'].fillna('')]
+    assert ranks == sorted(ranks)                                                # high risk, overdue review, retirement candidate, rest
+    assert {'risk', 'review_status', 'retirement_status'} <= set(table.columns)  # separate concepts, separate columns
+    assert 'Model Inventory &amp; Decisions' in text and 'Recommended replacement' not in text
     assert set(table['risk']) <= set(RISK_BADGES.values())                       # badges, not coloured rows
     assert re.search(r'finding" style="border-left-color:#(df4b55|f2a93b|39b98a)"', text)   # decision record: left-border indicator
 
@@ -133,6 +150,20 @@ def test_chargeback_states_it_is_an_unwindowed_scenario(no_gemini):
     assert 'Window: none (snapshot) · Source: synthetic scenario' in text
 
 
-def test_no_ai_features_were_added():
+def test_approved_assistants_are_present_and_bounded():
     src = Path(APP).read_text(encoding='utf-8')
-    assert 'Evaluation Assistant' not in src and 'Error Analysis' not in src
+    # Phase 4B: Model Evaluation Assistant. Phase 5B V1: Error Analysis Assistant (tests/test_error_assistant.py).
+    assert 'Model Evaluation Assistant' in src and 'Error Analysis Assistant' in src
+    # Both run AI only on an explicit click, never automatically on render.
+    assert "st.button('Analyze Model'" in src and "st.button('Analyze Failures'" in src
+
+
+def test_outcomes_chart_is_a_daily_outcomes_trend(no_gemini):
+    at, text = render('Platform health')
+    assert 'Daily Classified Call Outcomes' in text and 'Selected time window and environment' in text
+    assert 'Daily classified-call success rate (%)' not in text
+    fig = next(c for c in at.get('plotly_chart') if 'Total Calls' in c.proto.spec).proto.spec
+    import json
+    names = [t['name'] for t in json.loads(fig)['data']]
+    assert names == ['Total Calls', 'Successful Classified Calls', 'Failed Classified Calls']
+    assert 'kpi-label">Classified-call success rate<' in text
