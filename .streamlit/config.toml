@@ -6,4 +6,4 @@ textColor="#0B1F33"
 font="sans serif"
 [server]
 headless=true
-port=8505
+port=8501
