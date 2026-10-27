@@ -21,7 +21,7 @@ if errorlevel 1 goto failed
 if errorlevel 1 goto failed
 "%PYTHON%" -m pytest -q
 if errorlevel 1 goto failed
-"%PYTHON%" -m streamlit run app.py --server.port=8505 --server.address=127.0.0.1
+"%PYTHON%" -m streamlit run app.py --server.port=8501 --server.address=127.0.0.1
 exit /b %errorlevel%
 :failed
 echo Startup stopped. Review the error above. Python 3.11+ and dependency installation are required.
