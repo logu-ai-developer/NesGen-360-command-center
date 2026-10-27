@@ -11,6 +11,38 @@ def accounts():
 
 def test_no_admin_by_default():assert not auth.has_admin()
 
+def _app():
+    from streamlit.testing.v1 import AppTest
+    return AppTest.from_file(str(Path(__file__).resolve().parents[1]/'app.py'),default_timeout=30)
+
+def test_secrets_bootstrap_creates_admin_and_opens_login(monkeypatch):
+    # Hosted deploy with no committed DB: ADMIN_* secrets create the admin on first run.
+    monkeypatch.setenv('ADMIN_USERNAME','deploy_admin');monkeypatch.setenv('ADMIN_PASSWORD',PASS)
+    at=_app().run()
+    assert not at.exception and auth.has_admin()
+    assert auth.login('deploy_admin',PASS)                                   # the secret-created admin can sign in
+    assert not any('First-time setup' in w.value for w in at.warning)        # setup screen skipped
+    assert any(t.label=='Username' for t in at.text_input)                   # sign-in form is shown instead
+
+def test_without_secret_setup_screen_stays_and_no_admin(monkeypatch):
+    monkeypatch.delenv('ADMIN_USERNAME',raising=False);monkeypatch.delenv('ADMIN_PASSWORD',raising=False)
+    at=_app().run()
+    assert not at.exception and not auth.has_admin()
+    assert any('First-time setup' in w.value for w in at.warning)
+
+def test_short_secret_password_is_refused_without_crashing(monkeypatch):
+    from src import auth_ui
+    monkeypatch.setenv('ADMIN_PASSWORD','short')                             # under the 15-char policy
+    auth_ui._bootstrap_admin_from_secrets()
+    assert not auth.has_admin()                                             # refused, no admin, no exception
+
+def test_secrets_bootstrap_is_idempotent_and_keeps_first_admin(monkeypatch):
+    from src import auth_ui
+    auth.bootstrap_admin('admin_123',PASS)                                   # an admin already exists
+    monkeypatch.setenv('ADMIN_USERNAME','deploy_admin');monkeypatch.setenv('ADMIN_PASSWORD','A different passphrase 999!')
+    auth_ui._bootstrap_admin_from_secrets()                                  # must not create a second admin
+    assert auth.login('admin_123',PASS) and auth.login('deploy_admin','A different passphrase 999!') is None
+
 def test_registration_requires_local_setup():
     with pytest.raises(ValueError,match='setup'):auth.register_end_user('someone',PASS,'Demo',auth.GROUPS[0])
 

@@ -1,4 +1,5 @@
 """Authentication gate renders before any dashboard route or source load."""
+import os
 import streamlit as st
 from src import auth
 
@@ -36,6 +37,23 @@ def clear_session():
     for key in list(st.session_state):del st.session_state[key]
     auth.bind(None)
 
+def _secret(key):
+    """Read a deploy secret from Streamlit Secrets first, then the OS environment. Never raises."""
+    try:
+        if key in st.secrets:return str(st.secrets[key])
+    except Exception:pass
+    return os.environ.get(key)
+
+def _bootstrap_admin_from_secrets():
+    """First run only: create the administrator from ADMIN_USERNAME/ADMIN_PASSWORD so a hosted
+    deploy needs no committed database. No-op when an admin already exists, the secret is absent,
+    or the password is rejected (e.g. under 15 characters) — the manual setup path stays available.
+    A second concurrent first-run is refused by bootstrap_admin itself and swallowed here."""
+    password=_secret('ADMIN_PASSWORD')
+    if not password:return
+    try:auth.bootstrap_admin(_secret('ADMIN_USERNAME') or 'admin_123',password)
+    except Exception:pass
+
 def gate():
     auth.bind(None)
     token=st.session_state.get('auth_token')
@@ -52,7 +70,9 @@ def gate():
     st.subheader('Operations & Governance · Demo sign-in')
     st.info('Synthetic or approved sanitized data only. AI can make mistakes. Check cited evidence; operational decisions require human review. Local demo authentication is not enterprise identity verification.')
     if not auth.has_admin():
-        st.warning('First-time setup required. Run python scripts/setup_admin.py locally, then refresh. No default administrator password is shipped.')
+        _bootstrap_admin_from_secrets()
+    if not auth.has_admin():
+        st.warning('First-time setup required. Run python scripts/setup_admin.py locally, or set ADMIN_USERNAME and ADMIN_PASSWORD (15+ characters) in the app Secrets, then refresh. No default administrator password is shipped.')
         st.stop()
     login_tab,register_tab=st.tabs(['Sign in','Create demo account'])
     with login_tab:
