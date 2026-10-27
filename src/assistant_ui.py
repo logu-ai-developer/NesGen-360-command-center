@@ -46,27 +46,23 @@ def render_assistant(scope):
     if ss.agent_busy and not ss.agent_pending and not active(ss.agent_session):ss.agent_busy=False
     busy=ss.agent_busy or active(ss.agent_session)
     def submit_chat():queue_request(ss,ss.get('ai_chat_prompt',''),scope,model,time.time())
-    def submit_suggestion():queue_request(ss,ss.get('ai_suggested_question',''),scope,model,time.time())
+    def submit_example(question):queue_request(ss,question,scope,model,time.time())
     col1,col2=st.columns([4,1])
-    with col2:
-        with st.expander('💡 Example Questions',expanded=True):
-            audience=st.selectbox('Audience',list(EXAMPLES),key='ai_example_audience',disabled=busy)
-            for question in EXAMPLES[audience]:st.markdown('• '+question)
-            st.caption('These are just ideas — type any question about the platform in the box below. Changing the audience only changes examples; it never submits a request. “Last N days” ends today UTC.')
-        with st.expander('Limits explained'):
-            st.caption('Tool rounds apply to one question. Three rounds allow up to four model requests. RPM/RPD count each model request.')
     with col1:
+        with st.expander('💡 Example questions — click one to run it, or type your own below',expanded=not ss.agent_messages):
+            audience=st.selectbox('Audience (changes the examples only — it never sends anything)',list(EXAMPLES),key='ai_example_audience',disabled=busy)
+            for i,question in enumerate(EXAMPLES[audience]):
+                st.button(question,key=f'ai_example_{i}',disabled=busy,on_click=submit_example,args=(question,),use_container_width=True)
+            st.caption('These are just ideas. Type any question about the platform in the box below. “Last N days” ends today UTC.')
         for m in ss.agent_messages:
             with st.chat_message(m['role']):
                 if m.get('error'):st.error(m['content'])
                 else:st.markdown(m['content'])
                 if m.get('usage'):st.caption(m['usage'])
-        st.selectbox('Suggested question',EXAMPLES[audience],key='ai_suggested_question',disabled=busy)
-        st.chat_input('Ask about NesGen 360 dashboard data',key='ai_chat_prompt',disabled=busy,on_submit=submit_chat)
-        st.button('Analyze suggested question',type='primary',disabled=busy,on_click=submit_suggestion)
+        st.chat_input('Ask anything about the platform — type your question and press Enter',key='ai_chat_prompt',disabled=busy,on_submit=submit_chat)
         if ss.agent_messages and st.button('Clear conversation',disabled=busy):
             ss.agent_messages=[];st.rerun()
-        if busy:st.caption('One request is running. Send, Analyze, Audience, Suggested question and Clear are temporarily disabled.')
+        if busy:st.caption('One request is running. The examples, Audience, the question box and Clear are temporarily disabled until it finishes.')
         pending=ss.agent_pending
         if pending and acquire(ss.agent_session):
             # Consume before calling the model. A widget rerun cannot replay it.
@@ -114,3 +110,6 @@ def render_assistant(scope):
                     if rid:finish(rid,started,'interrupted',error='ui_interrupted')
                     ss.agent_messages.append({'role':'assistant','error':True,'content':'The UI run was interrupted. The request was not replayed automatically; provider completion may be unknown.'})
             st.rerun()
+    with col2:
+        with st.expander('Limits explained'):
+            st.caption('Tool rounds apply to one question. Three rounds allow up to four model requests. RPM/RPD count each model request.')

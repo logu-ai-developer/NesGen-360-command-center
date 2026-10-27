@@ -100,6 +100,26 @@ def test_parse_sections_renders_a_list_section_as_plain_text():
     assert sections['how_to_reduce'] == 'Add backoff. Request a higher quota.' and '[' not in sections['how_to_reduce']
 
 
+def test_parse_sections_tolerates_fences_and_trailing_prose():
+    # Regression: a reply wrapped in a ```json fence, or with a trailing sentence, must still parse (not be discarded).
+    body = {'observed_pattern': 'x', 'likely_causes': 'y ' + ea.REQUIRED_SENTENCE, 'how_to_reduce': 'z',
+            'user_guidance': 'w', 'owner_category': 'Platform Support'}
+    fenced = '```json\n' + json.dumps(body) + '\n```'
+    assert set(ea.parse_sections(fenced)) == set(ea.SECTION_KEYS)
+    trailing = json.dumps(body) + '\n\nLet me know if you need more detail.'
+    assert set(ea.parse_sections(trailing)) == set(ea.SECTION_KEYS)
+
+
+def test_parse_sections_salvages_known_keys_from_imperfect_json():
+    # Regression for the JSONDecodeError seen in the field: a single malformed tail must not throw a raw decode error;
+    # the known string fields are salvaged and the result is a clean dict (or a ValueError, never a JSONDecodeError).
+    good = {'observed_pattern': 'Code 503 occurred 10 times.', 'likely_causes': 'General ' + ea.REQUIRED_SENTENCE,
+            'how_to_reduce': 'Add backoff.', 'user_guidance': 'Retry later.', 'owner_category': 'Platform Support'}
+    broken = json.dumps(good)[:-1] + ' , oops not json'          # corrupt the closing structure
+    out = ea.parse_sections(broken)
+    assert set(out) == set(ea.SECTION_KEYS) and out['owner_category'] == 'Platform Support'
+
+
 def test_missing_and_extra_sections_are_rejected():
     with pytest.raises(ValueError):
         ea.parse_sections(json.dumps({'observed_pattern': 'x'}))
