@@ -119,7 +119,7 @@ def test_section_returned_as_list_is_flattened_to_text():
 # ---- analyze (bounded call mocked) --------------------------------------------------------------
 def test_analyze_returns_validated_sections(monkeypatch):
     ev = ca.build_evidence(_charges(), ca.make_focus('Azure'), 5)
-    monkeypatch.setattr(ca, '_generate', lambda system, user, model: _good())
+    monkeypatch.setattr(ca, '_generate', lambda system, user, model, **k: _good())
     out = ca.analyze(ev, 'gemini-x')
     assert set(out) == set(ca.SECTION_KEYS) and out['owner_category'] == 'Interface Team'
 

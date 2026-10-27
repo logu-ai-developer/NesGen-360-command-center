@@ -72,7 +72,7 @@ def test_dropdown_change_does_not_analyze(no_gemini, monkeypatch):
 
 def test_analyze_click_runs_once_and_shows_sections_then_notice(no_gemini, monkeypatch):
     seen = []
-    monkeypatch.setattr(ma, '_generate', lambda system, user, model: seen.append((system, user, model)) or GOOD)
+    monkeypatch.setattr(ma, '_generate', lambda system, user, model, **k: seen.append((system, user, model)) or GOOD)
     at, _ = render('Model lifecycle')
     next(b for b in at.button if b.label == 'Analyze Model').click().run()
     assert len(seen) == 1 and not at.exception

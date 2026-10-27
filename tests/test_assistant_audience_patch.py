@@ -128,4 +128,5 @@ def test_ai_page_empty_history_and_audience_panel():
     assert at.selectbox(key='ai_example_audience').value=='Platform Team'
     at.selectbox(key='ai_example_audience').set_value('Regional Product Owners & Managers').run()
     assert not at.exception
-    assert 'last 10 days' in at.selectbox(key='ai_suggested_question').value
+    # The audience's examples are now clickable buttons; switching audience swaps them in.
+    assert any('last 10 days' in b.label for b in at.button)

@@ -209,7 +209,8 @@ def test_executive_page_responds_to_the_window(no_gemini):
     assert len(set(rates)) == 3, rates
     for k, days in WINDOW_DAYS.items():
         assert f'Last {days} days' in texts[k] and 'event timestamp' in texts[k] and 'approval date' in texts[k]
-    assert [card(texts[k], 'Newly approved use cases') for k in WINDOW_DAYS] == ['26', '31', '80']
+    # The "Newly approved use cases" card was dropped from Executive (it lives on User adoption now); see
+    # test_demo_adoption_exposes_the_undated_use_case_path for the windowed-approval counts.
     assert 'snapshots, not windowed' in texts['1 Month'] and 'Monthly active' not in texts['1 Month']
 
 

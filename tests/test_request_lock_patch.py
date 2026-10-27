@@ -34,11 +34,11 @@ def app():
     at.sidebar.radio[0].set_value('AI assistant').run()
     return at
 
-def test_audience_and_suggestion_never_call_model(monkeypatch):
+def test_audience_change_never_calls_model(monkeypatch):
+    # Switching the audience only swaps the example buttons; it must never submit a model request.
     from src import assistant_ui
     calls=[];monkeypatch.setattr(assistant_ui,'ask',lambda *a,**k:calls.append(1))
     at=app();at.selectbox(key='ai_example_audience').set_value('Chargeback / FinOps').run()
-    at.selectbox(key='ai_suggested_question').set_value('Show unexplained amounts by provider.').run()
     assert not at.exception and calls==[]
 
 def test_controls_disabled_during_model_call(monkeypatch):
@@ -47,14 +47,15 @@ def test_controls_disabled_during_model_call(monkeypatch):
     at=app();calls=[]
     def ask(*args,**kwargs):
         calls.append(args[0])
-        assert at.button[0].disabled
+        assert at.button[0].disabled                                   # the first example button
         assert at.selectbox(key='ai_example_audience').disabled
-        assert at.selectbox(key='ai_suggested_question').disabled
         assert at.chat_input[0].disabled
         return 'Mock answer',10,5
     monkeypatch.setattr(assistant_ui,'ask',ask)
-    next(b for b in at.button if b.label=='Analyze suggested question').click().run()
-    assert not at.exception and len(calls)==1
+    # Clicking an example button submits exactly that example's text, once.
+    example=next(b for b in at.button if b.key=='ai_example_0')
+    example.click().run()
+    assert not at.exception and len(calls)==1 and calls[0]==example.label
     assert not at.chat_input[0].disabled
     at.selectbox(key='ai_example_audience').set_value('Business Stakeholders').run()
     assert len(calls)==1

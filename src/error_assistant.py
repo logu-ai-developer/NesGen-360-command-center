@@ -15,7 +15,7 @@ import json
 import re
 import pandas as pd
 from src.metrics import fmt_pct
-from src.model_assistant import _generate  # reuse the identical bounded, quota-governed Gemini call
+from src.model_assistant import _generate, loads_lenient  # reuse the identical bounded, quota-governed Gemini call + robust JSON parse
 
 ADVISORY = 'AI guidance uses general knowledge of standard error codes and is advisory; verify against your system. It is not a confirmed root-cause analysis.'
 UNAVAILABLE = 'AI analysis is currently unavailable.'
@@ -126,10 +126,7 @@ def build_prompt(evidence: dict) -> tuple[str, str]:
 
 def parse_sections(text: str) -> dict:
     """Exactly the five required sections as plain text, or ValueError. Rejects missing AND extra keys."""
-    raw = (text or '').strip()
-    if raw.startswith('```'):
-        raw = raw.strip('`').removeprefix('json').strip()
-    data = json.loads(raw)
+    data = loads_lenient(text, SECTION_KEYS)
     if not isinstance(data, dict):
         raise ValueError('unexpected reply shape')
     if set(data) != set(SECTION_KEYS):
@@ -189,7 +186,7 @@ def _is_capacity_error(evidence: dict) -> bool:
 def analyze(evidence: dict, model: str) -> dict:
     """Interpret the evidence. Returns the five validated sections; raises when AI is unavailable or the reply is rejected."""
     system, user = build_prompt(evidence)
-    sections = parse_sections(_generate(system, user, model))
+    sections = parse_sections(_generate(system, user, model, keys=SECTION_KEYS))
     validate(sections, evidence)
     # Deterministically ensure the NesGen-platform deployment-quota guidance appears for capacity/rate-limit errors.
     if _is_capacity_error(evidence):
