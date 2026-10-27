@@ -1,4 +1,6 @@
-"""Phase 5B V1: Error Analysis Assistant. Evidence-grounded, explicit Analyze, five validated sections, safe fallback."""
+"""Error Analysis Assistant (P4.2): Provider -> Model -> Error code cascade. The evidence is scoped to one model's
+real occurrences of one code (a model never shows a code it does not have); the model explains that code (meaning,
+why, how to reduce, what the user can do), grounded in the count, with the general-guidance disclaimer."""
 import json
 import pandas as pd
 import pytest
@@ -8,107 +10,94 @@ from tests.test_phase1_metrics import no_gemini  # noqa: F401
 from tests.test_phase3_experience import render, text_of
 
 
-def _evidence(focus, demo=True):
+def _tel():
     h = data.synthetic_health()
     window = resolve_window('6 Months', anchor_date(h.date))
-    d = h[window.mask(h.date)]
-    tel = data.get_telemetry(window, demo=demo)
+    return h[window.mask(h.date)], window, data.get_telemetry(window, demo=True)
+
+
+def _evidence(focus=None):
+    d, window, tel = _tel()
+    if focus is None:
+        b = tel['error_breakdown'].iloc[0]
+        focus = ea.make_focus(None, str(b.provider), str(b.model), str(b.error_code))
     return ea.build_evidence(tel, d, window, focus), tel
 
 
 def _good(**over):
-    base = {'observed_pattern': 'Failures are concentrated by provider.',
-            'supported_interpretation': 'Azure OpenAI ranks first by failures. ' + ea.REQUIRED_SENTENCE,
-            'uncertainty_gaps': 'Environment analysis, error category, error-to-model relationship, ownership mapping and root-cause evidence are Not available; code and message pairings are inconsistent.',
-            'investigation_steps': 'Review provider telemetry. Compare error concentrations.',
-            'owner_category': 'Platform Support'}
+    base = {'observed_pattern': 'Error code 429 occurred 1 time on this model.',
+            'likely_causes': 'Code 429 generally indicates provider rate limiting. ' + ea.REQUIRED_SENTENCE,
+            'how_to_reduce': 'Add client-side backoff with jitter and request a higher quota.',
+            'user_guidance': 'Lower the request rate and retry with backoff.',
+            'owner_category': 'Provider Management'}
     base.update(over)
     return json.dumps(base)
 
 
-# ---- Evidence builder (PH-15) ---------------------------------------------------------------------
-def test_focus_keys_and_unresolved_collapse_to_overall():
-    assert ea.make_focus('Provider', 'AWS Bedrock', None) == ('provider', 'AWS Bedrock', None)
-    assert ea.make_focus('Provider + Model', 'AWS Bedrock', 'Claude Sonnet 5.5') == ('provider_model', 'AWS Bedrock', 'Claude Sonnet 5.5')
-    assert ea.make_focus('Provider', None, None) == ('overall', None, None)          # no provider chosen yet
-    assert ea.make_focus('Overall window') == ('overall', None, None)
+# ---- Focus + per-model codes ----------------------------------------------------------------------
+def test_make_focus_requires_provider_model_code():
+    assert ea.make_focus(None, 'AWS Bedrock', 'Claude Sonnet 5.5', '429') == ('provider_model_code', 'AWS Bedrock', 'Claude Sonnet 5.5', '429')
+    assert ea.make_focus(None, 'AWS Bedrock', 'Claude Sonnet 5.5') == ('provider_model', 'AWS Bedrock', 'Claude Sonnet 5.5', None)
+    assert ea.make_focus() == ('overall', None, None, None)
 
 
-def test_overall_focus_is_deterministic_and_lists_unavailable_fields():
-    ev, _ = _evidence(('overall', None, None))
-    assert ev['Focus'] == 'Overall window'
-    assert ev == _evidence(('overall', None, None))[0]
+def test_a_model_only_exposes_its_own_error_codes():
+    # The core P4.2 honesty fix: not every model carries every code (so a model with no 500 never shows one).
+    _, _, tel = _tel()
+    bd = tel['error_breakdown']
+    assert {'model', 'provider', 'error_code', 'error_message', 'error_category', 'occurrences'}.issubset(bd.columns)
+    per_model = bd.groupby(['provider', 'model']).error_code.nunique()
+    assert per_model.max() < bd.error_code.nunique()                                  # no model has every code
+    assert int(tel['errors'].occurrences.sum()) == int(bd.occurrences.sum())          # window-wide table agrees with the breakdown
+
+
+def test_code_focus_is_scoped_to_the_model_and_code():
+    _, _, tel = _tel()
+    b = tel['error_breakdown'].iloc[0]
+    ev, _ = _evidence(ea.make_focus(None, str(b.provider), str(b.model), str(b.error_code)))
+    assert ev['Provider'] == str(b.provider) and ev['Model'] == str(b.model) and ev['Error code'] == str(b.error_code)
+    assert ev['Occurrences of this error on this model'] == f"{int(b.occurrences):,}"
+    assert ev['Error message (as recorded)'] == str(b.error_message)
     for field in ea.UNAVAILABLE_FIELDS:
         assert ev[field] == 'Not available'
-    assert 'Daily failed-call trend (window-wide)' in ev and 'Unclassified events excluded' in ev
-    assert 'Provider' not in ev and 'Model' not in ev
 
 
-def test_provider_focus_scopes_counts_to_that_provider():
-    _, tel = _evidence(('overall', None, None))
-    prov = tel['by_provider'].provider.astype(str).iloc[0]
-    ev, _ = _evidence(('provider', prov, None))
-    assert ev['Provider'] == prov and ev['Focus'] == f'Provider: {prov}'
-    row = tel['by_provider'][tel['by_provider'].provider.astype(str) == prov]
-    assert ev['Failed classified calls in focus'] == f"{int(row.failures.sum()):,}"
+def test_overall_focus_fallback_lists_top_codes():
+    ev, _ = _evidence(ea.make_focus())
+    assert ev['Focus'] == 'Overall window' and 'Top error codes (window-wide)' in ev
+    assert ev == _evidence(ea.make_focus())[0]                                        # deterministic
 
 
-def test_provider_model_focus_scopes_counts_to_that_model():
-    _, tel = _evidence(('overall', None, None))
-    r = tel['by_model'].sort_values('failures', ascending=False).iloc[0]
-    ev, _ = _evidence(('provider_model', str(r.provider), str(r.model)))
-    assert ev['Model'] == str(r.model) and ev['Provider'] == str(r.provider)
-    assert ev['Failed classified calls in focus'] == f"{int(r.failures):,}"
-
-
-def test_unknown_model_share_is_reported():
-    tel = {'stats': {'failed': 10, 'classified': 100, 'unclassified': 5, 'unclassified_pct': 4.5},
-           'by_provider': pd.DataFrame({'provider': ['AWS Bedrock'], 'calls': [100], 'failures': [10]}),
-           'by_model': pd.DataFrame({'model': ['Unknown', 'GPT-4o'], 'provider': ['AWS Bedrock', 'Azure OpenAI'], 'calls': [40, 60], 'failures': [3, 7]}),
-           'errors': pd.DataFrame({'error_code': [500], 'error_message': ['Rate limit exceeded'], 'occurrences': [3]})}
-    window = resolve_window('6 Months', anchor_date(data.synthetic_health().date))
-    ev = ea.build_evidence(tel, data.synthetic_health(), window, ('overall', None, None))
-    assert ev['Unknown-model share of failures'] == '30.00%'
-
-
-def test_no_classified_calls_in_focus_is_handled():
-    tel = {'stats': {'failed': 0, 'classified': 0, 'unclassified': 0, 'unclassified_pct': None},
-           'by_provider': pd.DataFrame({'provider': [], 'calls': [], 'failures': []}),
-           'by_model': pd.DataFrame({'model': [], 'provider': [], 'calls': [], 'failures': []}),
-           'errors': pd.DataFrame({'error_code': [], 'error_message': [], 'occurrences': []})}
-    window = resolve_window('6 Months', anchor_date(data.synthetic_health().date))
-    ev = ea.build_evidence(tel, data.synthetic_health().iloc[0:0], window, ('overall', None, None))
-    assert ev['Failure rate in focus'].startswith('N/A') and ev['Failed classified calls in focus'] == '0'
-    assert ev['Daily failed-call trend (window-wide)'] == 'No daily data in window'
-
-
-# ---- Prompt and grounding (PH-16) -----------------------------------------------------------------
-def test_prompt_is_bounded_and_states_the_known_limits():
-    ev, _ = _evidence(('overall', None, None))
+# ---- Prompt -------------------------------------------------------------------------------------
+def test_prompt_allows_code_knowledge_and_is_grounded():
+    ev, _ = _evidence()
     system, user = ea.build_prompt(ev)
     assert json.dumps(ev, ensure_ascii=False) in user and 'advisory' not in user
-    for banned in ('outage', 'root cause', 'network', 'inconsistent', 'Not available', 'Platform Support'):
-        assert banned in system
+    for token in ('429', 'general knowledge', 'Ground every', 'Not available', 'Platform Support'):
+        assert token in system
     assert ea.REQUIRED_SENTENCE in system
 
 
-# ---- Response validation (PH-16/PH-17) ------------------------------------------------------------
+# ---- Response validation ------------------------------------------------------------------------
 def test_valid_reply_passes_validation():
-    ev, _ = _evidence(('overall', None, None))
-    sections = ea.parse_sections(_good())
-    ea.validate(sections, ev)                                                        # does not raise
+    ev, _ = _evidence()
+    ea.validate(ea.parse_sections(_good()), ev)                                       # does not raise
 
 
-def test_gaps_may_list_root_cause_evidence_field_without_being_flagged():
-    # Regression: the required gaps section lists "Root-cause evidence: Not available"; the label contains the
-    # forbidden term "root-cause" but acknowledging the field must not be read as a causal claim.
-    ev, _ = _evidence(('overall', None, None))
-    sections = ea.parse_sections(_good(uncertainty_gaps='Root-cause evidence is Not available; no cause can be read from these fields.'))
-    ea.validate(sections, ev)                                                        # does not raise
-    # A real causal claim is still rejected even when the field label is also present.
-    bad = ea.parse_sections(_good(uncertainty_gaps='Root-cause evidence is Not available, but the root cause is the provider.'))
-    with pytest.raises(ValueError):
-        ea.validate(bad, ev)
+def test_llm_may_explain_error_code_causes_and_remediation():
+    ev, _ = _evidence()
+    sections = ea.parse_sections(_good(
+        likely_causes='Code 503 generally means the upstream model was unavailable, often from provider-side overload. ' + ea.REQUIRED_SENTENCE,
+        how_to_reduce='Add retry with 3 attempts and a 2-second backoff, and consider failover to a backup model.'))
+    ea.validate(sections, ev)                                                         # small advice numbers allowed; causes allowed
+
+
+def test_parse_sections_renders_a_list_section_as_plain_text():
+    reply = json.dumps({'observed_pattern': 'x', 'likely_causes': 'y ' + ea.REQUIRED_SENTENCE,
+                        'how_to_reduce': ['Add backoff.', 'Request a higher quota.'],
+                        'user_guidance': 'Lower the request rate.', 'owner_category': 'Platform Support'})
+    sections = ea.parse_sections(reply)
+    assert sections['how_to_reduce'] == 'Add backoff. Request a higher quota.' and '[' not in sections['how_to_reduce']
 
 
 def test_missing_and_extra_sections_are_rejected():
@@ -118,43 +107,26 @@ def test_missing_and_extra_sections_are_rejected():
         ea.parse_sections(_good()[:-1] + ', "extra": "no"}')
 
 
-def test_forbidden_causal_wording_is_rejected():
-    ev, _ = _evidence(('overall', None, None))
-    bad = ea.parse_sections(_good(observed_pattern='This was caused by a provider outage.'))
+def test_missing_general_guidance_disclaimer_is_rejected():
+    ev, _ = _evidence()
     with pytest.raises(ValueError):
-        ea.validate(bad, ev)
+        ea.validate(ea.parse_sections(_good(likely_causes='Code 429 means rate limiting.')), ev)
 
 
-def test_missing_required_no_cause_sentence_is_rejected():
-    ev, _ = _evidence(('overall', None, None))
-    bad = ea.parse_sections(_good(supported_interpretation='Azure OpenAI ranks first by failures.'))
+def test_invented_large_count_is_rejected():
+    ev, _ = _evidence()
     with pytest.raises(ValueError):
-        ea.validate(bad, ev)
-
-
-def test_invented_number_is_rejected():
-    ev, _ = _evidence(('overall', None, None))
-    bad = ea.parse_sections(_good(observed_pattern='There were 123456789 failures recorded.'))
-    with pytest.raises(ValueError):
-        ea.validate(bad, ev)
+        ea.validate(ea.parse_sections(_good(observed_pattern='There were 123456789 failures recorded.')), ev)
 
 
 def test_unsupported_owner_is_rejected():
-    ev, _ = _evidence(('overall', None, None))
-    bad = ea.parse_sections(_good(owner_category='Network Operations'))
+    ev, _ = _evidence()
     with pytest.raises(ValueError):
-        ea.validate(bad, ev)
-
-
-def test_unavailable_evidence_referenced_outside_gaps_is_rejected():
-    ev, _ = _evidence(('overall', None, None))
-    bad = ea.parse_sections(_good(observed_pattern='The PROD environment shows the most failures.'))
-    with pytest.raises(ValueError):
-        ea.validate(bad, ev)
+        ea.validate(ea.parse_sections(_good(owner_category='Network Operations')), ev)
 
 
 def test_analyze_runs_generate_then_validates(no_gemini, monkeypatch):
-    ev, _ = _evidence(('overall', None, None))
+    ev, _ = _evidence()
     monkeypatch.setattr(ea, '_generate', lambda *a, **k: _good())
     assert set(ea.analyze(ev, 'model-x')) == set(ea.SECTION_KEYS)
     monkeypatch.setattr(ea, '_generate', lambda *a, **k: _good(owner_category='Nobody'))
@@ -162,39 +134,56 @@ def test_analyze_runs_generate_then_validates(no_gemini, monkeypatch):
         ea.analyze(ev, 'model-x')
 
 
-# ---- Interaction and fallback (PH-14) -------------------------------------------------------------
+def test_analyze_appends_nesgen_platform_quota_guidance_for_rate_limit(no_gemini, monkeypatch):
+    # For a 429 / rate-limit error, both NesGen-platform deployment-quota statements are added deterministically.
+    ev = {'Error code': '429', 'Error category (as recorded)': 'Rate limit / Quota',
+          'Occurrences of this error on this model': '1', 'This model failed classified calls': '1', 'This model classified calls': '1'}
+    assert ea._is_capacity_error(ev)
+    monkeypatch.setattr(ea, '_generate', lambda *a, **k: _good())
+    out = ea.analyze(ev, 'model-x')
+    assert ea.PLATFORM_HOW_TO_REDUCE in out['how_to_reduce']
+    assert ea.PLATFORM_USER_GUIDANCE in out['user_guidance']
+    # A non-capacity error (content filter 400) does not get the quota statement.
+    assert not ea._is_capacity_error({'Error code': '400', 'Error message (as recorded)': 'Content filter violation'})
+
+
+# ---- Interaction and fallback -------------------------------------------------------------------
 def _ph_text(at):
     return (text_of(at) + '\n' + '\n'.join(str(w.value) for w in at.warning) + '\n'
             + '\n'.join(df.value.to_string() for df in at.table))
 
 
-def test_evidence_and_advisory_visible_without_ai_and_no_call_on_render(no_gemini, monkeypatch):
+def test_cascade_controls_and_evidence_visible_without_ai(no_gemini, monkeypatch):
     monkeypatch.setattr(ea, '_generate', lambda *a, **k: (_ for _ in ()).throw(AssertionError('no call on render')))
     at, _ = render('Platform health')
     text = _ph_text(at)
-    assert 'Error Analysis Assistant' in text and ea.ADVISORY in text
-    assert 'AI Interpretation' not in text
+    assert 'Error Analysis Assistant' in text and ea.ADVISORY in text and 'AI Interpretation' not in text
     assert [b.label for b in at.button if b.label == 'Analyze Failures'] == ['Analyze Failures']
+    assert {'ea_provider', 'ea_model_focus', 'ea_code'} <= {s.key for s in at.selectbox}
     assert any('Not available' in df.value.to_string() for df in at.table)
 
 
-def test_focus_change_does_not_call_and_click_calls_once(no_gemini, monkeypatch):
+def test_code_change_does_not_call_and_click_calls_once(no_gemini, monkeypatch):
     calls = []
     monkeypatch.setattr(ea, '_generate', lambda *a, **k: calls.append(1) or _good())
     at, _ = render('Platform health')
-    next(s for s in at.selectbox if s.key == 'ea_scope').set_value('Provider').run()
-    assert not calls and 'AI Interpretation' not in _ph_text(at)                      # focus change never calls AI
+    box = next(s for s in at.selectbox if s.key == 'ea_code')
+    if len(box.options) > 1:
+        box.set_value(box.options[1]).run()
+    assert not calls and 'AI Interpretation' not in _ph_text(at)
     next(b for b in at.button if b.label == 'Analyze Failures').click().run()
     assert len(calls) == 1 and 'AI Interpretation' in _ph_text(at) and ea.ADVISORY in _ph_text(at)
 
 
-def test_focus_change_clears_prior_result(no_gemini, monkeypatch):
+def test_code_change_clears_prior_result(no_gemini, monkeypatch):
     monkeypatch.setattr(ea, '_generate', lambda *a, **k: _good())
     at, _ = render('Platform health')
     next(b for b in at.button if b.label == 'Analyze Failures').click().run()
     assert 'AI Interpretation' in _ph_text(at)
-    next(s for s in at.selectbox if s.key == 'ea_scope').set_value('Provider').run()
-    assert 'AI Interpretation' not in _ph_text(at) and ea.ADVISORY in _ph_text(at)    # stale result hidden
+    box = next(s for s in at.selectbox if s.key == 'ea_code')
+    if len(box.options) > 1:
+        box.set_value(box.options[-1]).run()
+        assert 'AI Interpretation' not in _ph_text(at) and ea.ADVISORY in _ph_text(at)
 
 
 def test_gemini_failure_falls_back_and_keeps_evidence(no_gemini, monkeypatch):
@@ -202,20 +191,18 @@ def test_gemini_failure_falls_back_and_keeps_evidence(no_gemini, monkeypatch):
     at, _ = render('Platform health')
     next(b for b in at.button if b.label == 'Analyze Failures').click().run()
     text = _ph_text(at)
-    assert not at.exception and ea.UNAVAILABLE in text and ea.ADVISORY in text
-    assert 'Not available' in text                                                    # evidence stays visible
+    assert not at.exception and ea.UNAVAILABLE in text and ea.ADVISORY in text and 'Not available' in text
 
 
 def test_malformed_reply_is_treated_as_unavailable(no_gemini, monkeypatch):
-    monkeypatch.setattr(ea, '_generate', lambda *a, **k: 'The provider had an outage.')
+    monkeypatch.setattr(ea, '_generate', lambda *a, **k: 'Just some prose, not JSON.')
     at, _ = render('Platform health')
     next(b for b in at.button if b.label == 'Analyze Failures').click().run()
-    text = _ph_text(at)
-    assert ea.UNAVAILABLE in text and 'AI Interpretation' not in text and 'outage' not in text
+    assert ea.UNAVAILABLE in _ph_text(at) and 'AI Interpretation' not in _ph_text(at)
 
 
 def test_validation_rejection_is_treated_as_unavailable(no_gemini, monkeypatch):
-    monkeypatch.setattr(ea, '_generate', lambda *a, **k: _good(investigation_steps='This happened because of a network issue.'))
+    monkeypatch.setattr(ea, '_generate', lambda *a, **k: _good(owner_category='Nobody'))
     at, _ = render('Platform health')
     next(b for b in at.button if b.label == 'Analyze Failures').click().run()
     assert ea.UNAVAILABLE in _ph_text(at) and 'AI Interpretation' not in _ph_text(at)

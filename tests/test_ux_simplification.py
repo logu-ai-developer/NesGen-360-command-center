@@ -27,7 +27,7 @@ def test_focus_bullets_only_for_triggered_findings():
 def test_platform_health_order_and_primary_cards(no_gemini):
     write_telemetry(MIXED)
     _, text = page('Platform health')
-    order = [text.index(x) for x in ('Classified-call success rate', 'Most frequent errors', 'Failed classified calls by model', 'Supporting evidence')]
+    order = [text.index(x) for x in ('Call success rate', 'Most frequent errors', 'Failed classified calls by model', 'Supporting evidence')]
     assert order == sorted(order)
     assert text.index('kpi-label">Total classified calls') < text.index('Most frequent errors')   # volume and outcome cards now precede failure analysis
     assert '50.0% of telemetry events could not be classified and are excluded from reliability calculations.' in text

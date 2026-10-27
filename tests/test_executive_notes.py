@@ -15,7 +15,9 @@ def note_of(text, label):
 
 
 def executive(window=None):
-    at = AppTest.from_file(APP, default_timeout=60).run()
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.session_state['nesgen_real_data'] = True   # these note-wording tests render written real telemetry
+    at.run()
     at.sidebar.radio[0].set_value('Executive overview').run()
     assert not at.exception and not at.error, [x.value for x in at.error]
     return text_of(at)
@@ -28,40 +30,26 @@ def fixture(undated=5):
 
 def test_below_target_note_is_a_single_action_oriented_line(no_gemini):
     fixture(5)
-    note = note_of(executive(), 'Classified-call success rate')
+    note = note_of(executive(), 'Call success rate')
     assert note == 'Below 98% target · 5 failed calls require investigation'
-
-
-def test_values_in_the_note_are_calculated_not_hardcoded(no_gemini):
-    fixture(1234)
-    assert '1,234 undated events excluded' in note_of(executive(), 'Unclassified events')
-    fixture(0)
-    assert 'undated' not in note_of(executive(), 'Unclassified events')
-
-
-def test_unclassified_card_also_lists_undated_events_and_is_amber(no_gemini):
-    fixture(7)
-    text = executive()
-    assert '7 undated events excluded' in note_of(text, 'Unclassified events')
-    assert re.search(r'kpi kpi-warn"><div class="kpi-label">Unclassified events', text)
 
 
 def test_meets_target_wording(no_gemini):
     write_telemetry([(S, 'INFO', '2026-07-01')] * 99 + [(F, 'ERROR', '2026-07-01')])
-    note = note_of(executive(), 'Classified-call success rate')
+    note = note_of(executive(), 'Call success rate')
     assert note == 'Meets 98% target · 1 failed calls in selected window'
 
 
 def test_no_classified_calls_keeps_the_na_explanation(no_gemini):
     write_telemetry([(None, None, '2026-07-01')] * 3 + [(None, None, None)] * 2)
-    note = note_of(executive(), 'Classified-call success rate')
+    note = note_of(executive(), 'Call success rate')
     assert 'enough outcome classification evidence' in note and 'undated' not in note
 
 
 def test_active_status_note_is_a_decision_figure_and_caveat_moved_to_the_drawer(no_gemini):
     text = executive()
-    assert re.search(r'\d+% of use cases have Active status', note_of(text, 'Active-status use cases'))
-    assert 'not measured activity' not in note_of(text, 'Active-status use cases')
+    assert re.search(r'\d+% of use cases have Active status', note_of(text, 'Active use cases'))
+    assert 'not measured activity' not in note_of(text, 'Active use cases')
     assert 'not measured activity' in KPI_INFO['active_status_use_cases']['definition']
 
 

@@ -1,4 +1,5 @@
-"""Demo Scenario Data mode: swaps only Executive telemetry metrics and Platform Health; real data is never touched."""
+"""Scenario (demo) telemetry: the POC runs on the deterministic synthetic scenario data (P4.1 removed the Real/Demo
+toggle). The data layer still supports a real path; these tests cover the data layer and the demo-rendered pages."""
 import re
 import pandas as pd
 import pytest
@@ -8,7 +9,7 @@ from src.timewindow import WINDOW_DAYS
 from tests.test_phase1_metrics import APP, S, F, no_gemini, write_telemetry  # noqa: F401
 from tests.test_phase2_time import card
 
-KEYS = ('Classified-call success rate', 'Failed classified calls', 'Unclassified events', 'Event-level P95 latency')
+KEYS = ('Call success rate', 'Failed classified calls', 'P95 response time')
 
 
 def real_week():
@@ -17,21 +18,14 @@ def real_week():
 
 
 def render(page, window='6 Months', mode=None):
+    # The app is demo-only now; `mode` is ignored. The time window is a per-page radio (key 'tw_<page>').
     at = AppTest.from_file(APP, default_timeout=60).run()
     at.sidebar.radio[0].set_value(page).run()
-    next(r for r in at.sidebar.radio if r.key == 'time_window').set_value(window).run()
-    if mode:
-        next(r for r in at.sidebar.radio if r.key == 'data_mode').set_value(mode).run()
+    tw = [r for r in at.radio if str(r.key).startswith('tw_')]
+    if tw and window:
+        tw[0].set_value(window).run()
     assert not at.exception and not at.error, [x.value for x in at.error]
     return at, '\n'.join(m.value for m in at.markdown) + '\n' + '\n'.join(str(c.value) for c in at.caption)
-
-
-def test_selector_defaults_to_real_data_and_lists_both_modes():
-    at = AppTest.from_file(APP, default_timeout=60).run()
-    box = next(r for r in at.sidebar.radio if r.key == 'data_mode')
-    assert box.value == 'Real Data' and list(box.options) == ['Real Data', 'Demo Scenario Data']
-    assert [r.key for r in at.sidebar.radio][1:3] == ['time_window', 'data_mode']
-    assert any('Data Mode: Real Data' in c.value for c in at.sidebar.caption)
 
 
 def test_demo_frames_are_the_existing_deterministic_synthetic_data_and_labelled():
@@ -42,49 +36,31 @@ def test_demo_frames_are_the_existing_deterministic_synthetic_data_and_labelled(
 
 
 def test_demo_does_not_touch_real_telemetry_or_recorded_source_status():
+    # The data layer still supports a real path; demo never overwrites the recorded source status (even though the app
+    # itself now always runs demo).
     real_week()
     before = data.get_health()
     assert before.attrs['source_mode'] == 'parquet'
     status = storage.sources()
     data.get_health(demo=True), data.get_telemetry(demo=True)
-    assert storage.sources() == status                                   # demo never overwrites adapter status
+    assert storage.sources() == status
     pd.testing.assert_frame_equal(data.get_health(), before)
     assert data.get_telemetry()['mode'] == 'parquet' and data.get_telemetry()['stats']['events'] == 21
 
 
-def test_real_mode_is_identical_across_windows_and_has_no_demo_label(no_gemini):
-    real_week()
-    texts = {k: render('Platform health', k)[1] for k in WINDOW_DAYS}
-    for key in KEYS:
-        assert len({card(texts[k], key) for k in WINDOW_DAYS}) == 1
-    assert all('DEMO SCENARIO DATA' not in t for t in texts.values())
-
-
 @pytest.mark.parametrize('page', ['Executive overview', 'Platform health'])
-def test_demo_mode_is_unmistakable_and_responds_to_the_window(page, no_gemini):
-    real_week()
-    texts = {k: render(page, k, 'Demo Scenario Data')[1] for k in WINDOW_DAYS}
+def test_demo_mode_responds_to_the_window(page, no_gemini):
+    texts = {k: render(page, k)[1] for k in WINDOW_DAYS}
     for t in texts.values():
-        assert 'DEMO SCENARIO DATA' in t and 'synthetic scenario' in t and 'not real telemetry' in t
-        assert re.search(r'Last (30|90|180) days \(2026-\d\d-\d\d to 2026-10-17\)', t)           # synthetic anchor, not the real July week
-    for key in ('Classified-call success rate', 'Unclassified events'):
+        assert re.search(r'Last (30|90|180) days \(2026-\d\d-\d\d to 2026-10-17\)', t)           # synthetic anchor
+    for key in ('Call success rate',):
         assert len({card(texts[k], key) for k in WINDOW_DAYS}) == 3, key
 
 
-@pytest.mark.parametrize('page', ['User adoption', 'Model lifecycle', 'Chargeback'])
-def test_other_pages_are_not_replaced_by_demo_mode(page, no_gemini):
-    real_week()
-    _, real = render(page)
-    _, demo = render(page, mode='Demo Scenario Data')
-    assert 'DEMO SCENARIO DATA' not in demo
-    strip = lambda t: re.sub(r'(Data Mode:|rendered)[^\n]*', '', t)       # the sidebar indicator and clock are the only expected differences
-    assert strip(real) == strip(demo)
-
-
-def test_switching_back_restores_real_values(no_gemini):
-    real_week()
-    at, text = render('Platform health', '1 Month', 'Demo Scenario Data')
-    demo_failed = card(text, 'Failed classified calls')
-    next(r for r in at.sidebar.radio if r.key == 'data_mode').set_value('Real Data').run()
-    back = '\n'.join(m.value for m in at.markdown)
-    assert card(back, 'Failed classified calls') == '7' and demo_failed != '7' and 'DEMO SCENARIO DATA' not in back
+def test_demo_banner_is_absent_on_platform_health_and_executive(no_gemini):
+    # The DEMO SCENARIO DATA callout was removed from Platform Health (2026-10-26 usability request); the
+    # 'synthetic scenario' source badge/basis line still discloses the data origin on the page.
+    _, ph = render('Platform health', '1 Month')
+    assert 'DEMO SCENARIO DATA' not in ph and 'synthetic scenario' in ph
+    _, ex = render('Executive overview', '1 Month')
+    assert 'DEMO SCENARIO DATA' not in ex

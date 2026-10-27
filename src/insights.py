@@ -25,6 +25,7 @@ KPI_INFO = {
     'industrialized': _kpi('Models approved to operate in production.', 'Count where stage = Industrialized.', 'Model lifecycle', 'models', 'model_rows'),
     'review_due': _kpi('Models whose evidence needs refreshing.', 'Count where lifecycle status contains Review.', 'Model lifecycle', 'models', 'model_rows'),
     'retirement': _kpi('Models that need a retirement or migration decision.', 'Count where migration_required is Assess or Yes.', 'Model lifecycle', 'models', 'model_rows', 'Candidates for a decision, not a confirmed provider retirement.'),
+    'retirement_category': _kpi('Models in the Retirement lifecycle category.', 'Count where lifecycle category = Retirement (the model stage indicates retirement). Industrialized + Sandbox + Retirement add up to the total models in inventory.', 'Model lifecycle', 'models', 'model_rows', 'Lifecycle category is derived from the model stage; it is a different lens from review status and migration decisions.'),
     # Platform health (outcome-based: Body.Tracepoint)
     'classified_calls': _kpi('API calls whose outcome is known (successful or failed).', 'Successful + Failed classified calls. Total events = Successful + Failed + Unclassified.', 'Platform health', 'new_relic', 'classified_calls', 'Unclassified events are excluded here and shown on their own card.'),
     'calls_success': _kpi('Classified calls that completed normally.', 'Count where Body.Tracepoint = FLOW-END; share = successful / classified calls x 100.', 'Platform health', 'new_relic', 'successful_classified_calls'),
@@ -37,7 +38,7 @@ KPI_INFO = {
     'peak_daily_p95': _kpi('Highest single-day P95 response time in the window.', 'Maximum of the daily P95 latency values, shown in seconds.', 'Platform health', 'health_daily', 'maximum_daily_p95_ms', 'A daily value, not the P95 across all calls. Do not use it for SLA statements.'),
     'p95_true': _kpi('Response time that 95% of classified calls stay under.', 'QUANTILE_CONT(responseTime, 0.95) across all classified calls.', 'Platform health', 'new_relic', 'p95_latency_ms', 'Unlike the daily trend chart, this is the event-level P95 over every classified call, not a percentile of daily P95 values. Use it for SLA statements.'),
     # User adoption
-    'use_cases': _kpi('Canonical use cases onboarded to the platform.', 'Count of distinct application / use-case IDs after the sidebar filters. Repeated IDs collapse to the first row; the use-case name is a display label only.', 'User adoption', 'applications', 'canonical_use_cases', 'Rows with no ID are preserved and counted separately, not invented as use cases.'),
+    'use_cases': _kpi('Canonical use cases in the platform portfolio.', 'Count of distinct application / use-case IDs after the sidebar filters. Repeated IDs collapse to the first row; the use-case name is a display label only.', 'User adoption', 'applications', 'canonical_use_cases', 'Rows with no ID are preserved and counted separately, not invented as use cases.'),
     'uc_sandbox': _kpi('Canonical use cases in the Sandbox stage.', 'Count of distinct IDs where use_case_stage = Sandbox.', 'User adoption', 'applications', 'sandbox_use_cases', 'Stage is a portfolio stage, separate from status, approval and activity.'),
     'uc_industrialized': _kpi('Canonical use cases in the Industrialized stage.', 'Count of distinct IDs where use_case_stage = Industrialized.', 'User adoption', 'applications', 'industrialized_use_cases', 'Stage is a portfolio stage, separate from status, approval and activity.'),
     'adoption_new': _kpi('Canonical use cases whose status field is New.', 'Count of distinct IDs where normalized status = New.', 'User adoption', 'applications', 'new_status_use_cases', 'Status field only. Not "newly approved": that needs an approval date inside an explicit period.'),
@@ -69,6 +70,7 @@ KPI_WHY = {
     'industrialized': 'Shows how many models are cleared for production use.',
     'review_due': 'Flags models whose evidence needs refreshing.',
     'retirement': 'Flags models that need a retirement or migration decision.',
+    'retirement_category': 'Shows how much of the inventory is in the retirement stage.',
     'classified_calls': 'Gives the volume behind the reliability figures.',
     'calls_success': 'Shows the volume of calls that completed normally.',
     'calls_failed': 'Shows how many calls need investigation.',
@@ -125,11 +127,11 @@ def build_decision_brief(apps, models, health, charges, alerts):
             worst = float(daily.min()) if len(daily) else rate
             if rate < AVAILABILITY_TARGET or worst < 92:
                 sev = 'Critical' if worst < 92 else 'High'
-                items.append(_item(sev, 'Reliability', 'Classified-call success rate below target',
-                                   f'Classified-call success rate {rate:.2f}% (target {AVAILABILITY_TARGET:.0f}%), worst day {worst:.1f}%; {o["unclassified"]:,} of {o["events"]:,} events unclassified and excluded. Not verified availability.',
+                items.append(_item(sev, 'Reliability', 'Call success rate below target',
+                                   f'Call success rate {rate:.2f}% (target {AVAILABILITY_TARGET:.0f}%), worst day {worst:.1f}%; {o["unclassified"]:,} of {o["events"]:,} events uncategorized and excluded. Not verified availability.',
                                    'Dashboard: Platform health', 'Investigate the worst-day failure window and confirm the pre-production fix.', 'Platform Support',
-                                   summary=(f'{rate:.2f}% classified-call success rate is below the {AVAILABILITY_TARGET:.0f}% target.' if rate < AVAILABILITY_TARGET
-                                            else f'Worst-day classified-call success rate fell to {worst:.1f}%.'),
+                                   summary=(f'{rate:.2f}% call success rate is below the {AVAILABILITY_TARGET:.0f}% target.' if rate < AVAILABILITY_TARGET
+                                            else f'Worst-day call success rate fell to {worst:.1f}%.'),
                                    impact=f'{o["failed"]:,} of {o["classified"]:,} classified calls failed.',
                                    recommended_action='Review the dominant failure contributors.'))
     if charges is not None and len(charges):
@@ -230,6 +232,11 @@ RETIREMENT_BADGES = {'Candidate': '◐ Candidate', 'Scheduled': '▣ Scheduled',
 # Distinct palettes per concept so one colour never stands for two concepts (risk: red/amber/green; review: blue/grey; retirement: purple/grey).
 REVIEW_COLORS = {'Overdue': '#1768ff', 'Review due': '#6a8fd8', 'Current': '#65758a'}
 RETIREMENT_COLORS = {'Candidate': '#7a5af8', 'Scheduled': '#5b3fc4', 'Retired': '#65758a', 'None': '#65758a'}
+# Decommission readiness traffic-light, read conventionally: green = active/healthy, amber = retiring with a replacement, red = retiring with none.
+READINESS_STATUS_COLORS = {'Active (not retiring)': '#39b98a', 'Retiring: replacement available': '#f2a93b',
+                           'Retiring: no replacement': '#df4b55'}
+READINESS_STATUS_BADGES = {'Active (not retiring)': '🟢 Active', 'Retiring: replacement available': '🟡 Retiring · replacement ready',
+                           'Retiring: no replacement': '🔴 Retiring · no replacement'}
 
 
 def model_attention_rank(models):

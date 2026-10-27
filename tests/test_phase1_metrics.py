@@ -71,6 +71,20 @@ def test_zero_classified_is_unavailable_not_zero_percent():
     assert metrics.fmt_pct(75.0) == '75.00%'
 
 
+def test_fmt_count_millions_abbreviation():
+    # Readable millions (Western) notation on dashboard KPI cards: B / M / K, one decimal, trailing zeros stripped.
+    assert metrics.fmt_count(2_000_000) == '2M'
+    assert metrics.fmt_count(45_400_000) == '45.4M'
+    assert metrics.fmt_count(10_000_000) == '10M'
+    assert metrics.fmt_count(931_000) == '931K'
+    assert metrics.fmt_count(99_691) == '99.7K'           # thousands are abbreviated
+    assert metrics.fmt_count(1_200_000_000) == '1.2B'     # billions
+    assert metrics.fmt_count(9_961) == '10K'              # rounds to one decimal
+    assert metrics.fmt_count(500) == '500'                # below 1,000: grouped digits
+    assert metrics.fmt_count(7) == '7' and metrics.fmt_count(0) == '0'
+    assert metrics.fmt_count(None) == 'N/A' and metrics.fmt_count(float('nan')) == 'N/A'
+
+
 def test_health_outcomes_without_counts_is_all_unclassified():
     o = metrics.health_outcomes(pd.DataFrame({'requests': [10, 5], 'success_rate': [99.0, 99.0]}))
     assert (o['success'], o['failed'], o['unclassified']) == (0, 0, 15) and o['success_pct'] is None
@@ -133,9 +147,9 @@ def test_parquet_without_tracepoint_column_is_all_unclassified():
 def test_executive_rule_uses_event_weighted_classified_rate_and_discloses_unclassified():
     health = pd.DataFrame({'success_rate': [90.0, 90.9], 'successful_calls': [90, 900], 'failed_calls': [10, 90], 'unclassified_events': [50, 0], 'requests': [150, 990]})
     items = build_decision_brief(None, None, health, None, None)
-    assert len(items) == 1 and items[0]['title'] == 'Classified-call success rate below target'
+    assert len(items) == 1 and items[0]['title'] == 'Call success rate below target'
     ev = items[0]['evidence']
-    assert 'Classified-call success rate 90.83%' in ev and '50 of 1,140 events unclassified' in ev   # 990 / (990 + 100); not the 90.45% mean of daily rates
+    assert 'Call success rate 90.83%' in ev and '50 of 1,140 events uncategorized' in ev   # 990 / (990 + 100); not the 90.45% mean of daily rates
     assert 'Not verified availability' in ev and 'Average availability' not in ev
 
 
@@ -162,7 +176,7 @@ def test_platform_report_evidence_is_strict_json_and_labelled(monkeypatch):
 def test_decision_brief_tool_carries_corrected_reliability_finding():
     x = ai.get_decision_brief()
     titles = [f['title'] for f in x['findings']]
-    assert 'Classified-call success rate below target' in titles and x['source_mode'] == 'synthetic scenario'
+    assert 'Call success rate below target' in titles and x['source_mode'] == 'synthetic scenario'
     assert 'Platform reliability below target' not in titles
 
 
@@ -317,7 +331,9 @@ def test_services_healthy_is_removed_from_the_catalog():
 
 # ---- Rendered pages ------------------------------------------------------------------------------
 def page(name):
-    at = AppTest.from_file(APP, default_timeout=60).run()
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.session_state['nesgen_real_data'] = True   # metric-correctness tests validate the real-data rendering pipeline
+    at.run()
     at.sidebar.radio[0].set_value(name).run()
     assert not at.exception and not at.error, [x.value for x in at.error]
     return at, '\n'.join(m.value for m in at.markdown) + '\n' + '\n'.join(str(c.value) for c in at.caption)
@@ -349,15 +365,15 @@ def test_pages_use_honest_labels_and_drawers(name, no_gemini):
 
 def test_executive_labels(no_gemini):
     _, text = page('Executive overview')
-    for label in ('Classified-call success rate', 'Models in inventory', 'Active-status use cases', 'Priority actions'):
+    for label in ('Call success rate', 'Models in inventory', 'Active use cases', 'Priority actions'):
         assert label in text
     assert 'Governed models' not in text and 'synthetic scenario' in text
 
 
 def test_user_adoption_labels_synthetic_fallback(no_gemini):
     _, text = page('User adoption')
-    for label in ('Use cases onboarded', 'Sandbox use cases', 'Industrialized use cases', 'Estimated active users', 'Active-status use cases',
-                  'New-status use cases', 'Dormant-status use cases', 'Onboarding-status use cases'):
+    for label in ('Use cases in portfolio', 'Sandbox use cases', 'Industrialized use cases', 'Estimated active users', 'Active use cases',
+                  'New-status use cases', 'Inactive use cases', 'Onboarding-status use cases'):
         assert label in text, label
     assert 'Synthetic estimate derived from expected users; not observed identities or measured platform activity.' in text
     assert 'Reported active users' not in text and 'Observed active users' not in text and 'synthetic fallback' in text
@@ -381,7 +397,7 @@ def test_user_adoption_without_active_users_field_shows_na(monkeypatch, tmp_path
 def test_platform_health_with_unclassified_telemetry(no_gemini):
     write_telemetry(MIXED)
     _, text = page('Platform health')
-    for label in ('Total classified calls', 'Successful classified calls', 'Failed classified calls', 'Classified-call success rate', 'Unclassified events'):
+    for label in ('Total classified calls', 'Successful classified calls', 'Failed classified calls', 'Call success rate'):
         assert label in text, label
     assert 'unclassified telemetry present' in text and '75.00%' in text and '50.00% of events' in text
     for bad in ('Total API calls', 'Successful calls<', 'Failed calls<', 'Daily success rate'):
@@ -398,7 +414,7 @@ def test_platform_health_with_only_unclassified_telemetry_shows_na(no_gemini):
 def test_executive_page_with_only_unclassified_telemetry(no_gemini):
     write_telemetry([(None, 'INFO', '2026-10-01')] * 3)
     _, text = page('Executive overview')
-    assert 'N/A' in text and metrics.NO_CLASSIFIED_NOTE in text and 'Classified-call success rate below target' not in text
+    assert 'N/A' in text and metrics.NO_CLASSIFIED_NOTE in text and 'Call success rate below target' not in text
 
 
 def test_sidebar_css_does_not_pin_width_or_hide_collapse_controls():

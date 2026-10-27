@@ -114,7 +114,8 @@ def test_synthetic_approvals_cover_window_with_spikes_gap_and_older_rows():
     a = data.synthetic_apps()
     off = (END - a.created_date).dt.days
     assert len(a) == 100 and off.min() >= 0 and a.created_date.max() <= END                 # no future approvals
-    assert (off >= 181).sum() == 20                                                          # older approvals
+    assert (off >= 181).sum() == 15                                                          # older dated approvals (20 older, UNDATED_K=5 now undated)
+    assert a.created_date.isna().sum() == data.UNDATED_K == 5                                 # WS-4/UA-09: fixed undated rows, all from the out-of-window older bucket
     assert ((off >= 40) & (off <= 69)).sum() == 0                                            # zero-approval period
     assert ((off >= 100) & (off <= 106)).sum() >= 22 and ((off >= 12) & (off <= 16)).sum() >= 14   # spikes
     assert [count_in_window(a, 'created_date', resolve_window(k, END)) for k in WINDOW_DAYS] == [26, 31, 80]
@@ -128,7 +129,7 @@ def test_synthetic_lifecycle_dates_fall_in_the_window_and_are_stable():
         assert len(d) and d.min() >= END - pd.Timedelta(days=179) and d.max() <= END, col
     assert lifecycle_anchor(m) == END
     counts = [lifecycle_date_counts(m, resolve_window(k, END)) for k in WINDOW_DAYS]
-    assert counts[2] == {'Last review': 32, 'Review due': 9, 'Next review': 0, 'Retirement decision': 12, 'Retire date': 0, 'Migration': 12}
+    assert counts[2] == {'Last review': 32, 'Review due': 3, 'Next review': 0, 'Retirement decision': 6, 'Retire date': 0, 'Migration': 6}
     for label in counts[2]:
         assert counts[0][label] <= counts[1][label] <= counts[2][label]
 
@@ -159,21 +160,25 @@ def test_priority_findings_follow_the_window():
     h = data.synthetic_health()
     def titles(key):
         return [i['title'] for i in build_decision_brief(None, None, filter_by_window(h, 'date', resolve_window(key, END)), None, None)]
-    assert 'Classified-call success rate below target' in titles('6 Months')
+    assert 'Call success rate below target' in titles('6 Months')
     healthy = h[(END - h.date).dt.days.between(40, 69)]                                       # a clean stretch of the same dataset
     assert build_decision_brief(None, None, healthy, None, None) == []
 
 
 def selectbox(at, key):
-    # The time-window control is a sidebar radio, directly below navigation.
-    return next(s for s in at.sidebar.radio if s.key == key)
+    # P3: the time-window control is now a per-page radio (key 'tw_<page>'), rendered in the page body.
+    return next(s for s in at.radio if str(s.key).startswith('tw_'))
 
 
 def render(page, window=None):
-    at = AppTest.from_file(APP, default_timeout=60).run()
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.session_state['nesgen_real_data'] = True   # window tests validate the real-data rendering pipeline
+    at.run()
     at.sidebar.radio[0].set_value(page).run()
     if window:
-        selectbox(at, 'time_window').set_value(window).run()
+        tw = [r for r in at.radio if str(r.key).startswith('tw_')]
+        if tw:
+            tw[0].set_value(window).run()
     assert not at.exception and not at.error, [x.value for x in at.error]
     return '\n'.join(m.value for m in at.markdown) + '\n' + '\n'.join(str(c.value) for c in at.caption)
 
@@ -184,23 +189,38 @@ def card(text, label):
 
 def test_time_window_control_defaults_to_six_months_and_lists_all_windows():
     at = AppTest.from_file(APP, default_timeout=60).run()
+    at.sidebar.radio[0].set_value('Platform health').run()
     box = selectbox(at, 'time_window')
     assert box.value == '6 Months' and list(box.options) == list(WINDOW_DAYS)
-    assert at.sidebar.radio[1].key == 'time_window'   # right below navigation
-    assert any('Time Window: 6 Months (180 days)' in c.value for c in at.sidebar.caption)
-    box.set_value('1 Month').run()
-    assert any('Time Window: 1 Month (30 days)' in c.value for c in at.sidebar.caption)
-    assert [s.label for s in at.sidebar.selectbox] == ['Region', 'Environment', 'Provider']
+
+
+def test_each_page_has_its_own_independent_window():
+    # P3: setting the window on one page must not change another page's window.
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    at.sidebar.radio[0].set_value('Platform health').run()
+    next(r for r in at.radio if str(r.key).startswith('tw_')).set_value('1 Month').run()
+    at.sidebar.radio[0].set_value('Model lifecycle').run()
+    assert next(r for r in at.radio if str(r.key).startswith('tw_')).value == '6 Months'   # lifecycle keeps its own default
 
 
 def test_executive_page_responds_to_the_window(no_gemini):
     texts = {k: render('Executive overview', k) for k in WINDOW_DAYS}
-    rates = [card(texts[k], 'Classified-call success rate') for k in WINDOW_DAYS]
+    rates = [card(texts[k], 'Call success rate') for k in WINDOW_DAYS]
     assert len(set(rates)) == 3, rates
     for k, days in WINDOW_DAYS.items():
         assert f'Last {days} days' in texts[k] and 'event timestamp' in texts[k] and 'approval date' in texts[k]
     assert [card(texts[k], 'Newly approved use cases') for k in WINDOW_DAYS] == ['26', '31', '80']
     assert 'snapshots, not windowed' in texts['1 Month'] and 'Monthly active' not in texts['1 Month']
+
+
+def test_demo_adoption_exposes_the_undated_use_case_path(no_gemini):
+    # WS-4/UA-09: with the synthetic fallback the "Use cases without approval date" card is now non-zero and the
+    # canonical total and approval-window counts are unchanged.
+    for w in ('6 Months', '1 Month'):
+        text = render('User adoption', w)
+        assert card(text, 'Use cases without approval date') == '5'                           # non-zero, not windowed
+    text6 = render('User adoption', '6 Months')
+    assert card(text6, 'Use cases in portfolio') == '100' and card(text6, 'Newly approved use cases') == '80'
 
 
 # ---- Platform Health ------------------------------------------------------------------------------
@@ -254,7 +274,7 @@ def test_platform_health_page_shows_one_window(no_gemini):
     for k, days in WINDOW_DAYS.items():
         assert f'Last {days} days' in texts[k] and 'every card, chart and table on this page uses this window' in texts[k]
     assert '5 events have no event timestamp' in texts['1 Month']
-    assert card(texts['1 Month'], 'Classified-call success rate') == '66.67%'
+    assert card(texts['1 Month'], 'Call success rate') == '66.67%'
 
 
 def test_platform_health_synthetic_fallback_responds_to_window(no_gemini):
@@ -266,12 +286,12 @@ def test_platform_health_synthetic_fallback_responds_to_window(no_gemini):
 # ---- Adoption -------------------------------------------------------------------------------------
 def test_adoption_trend_is_approval_based_and_not_activity(no_gemini):
     texts = {k: render('User adoption', k) for k in WINDOW_DAYS}
-    assert [card(texts[k], 'Newly approved use cases') for k in WINDOW_DAYS] == ['26', '31', '80']
-    assert [card(texts[k], 'Previous period approvals') for k in WINDOW_DAYS] == ['3', '49', '20']
+    assert [card(texts[k], 'Newly approved use cases') for k in WINDOW_DAYS] == ['26', '31', '80']   # invariant: current-window counts unchanged by WS-4
+    assert [card(texts[k], 'Previous period approvals') for k in WINDOW_DAYS] == ['3', '49', '15']   # 180d previous period is the older bucket; UNDATED_K=5 of it became undated (expected WS-4 move)
     text = texts['3 Months']
     assert 'Approval-based trend' in text and 'date field: approval date' in text and 'Approval dates are not activity' in text
     assert 'Monthly active' not in text and 'No use in 30 days' not in text
-    assert card(text, 'Active-status use cases') == card(texts['1 Month'], 'Active-status use cases')      # status snapshot unchanged by window
+    assert card(text, 'Active use cases') == card(texts['1 Month'], 'Active use cases')      # status snapshot unchanged by window
 
 
 def test_adoption_with_missing_approval_dates(monkeypatch, tmp_path, no_gemini):

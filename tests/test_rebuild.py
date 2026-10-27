@@ -102,7 +102,7 @@ def test_two_model_requests_are_both_reserved(monkeypatch):
     monkeypatch.setattr(genai,'Client',MagicMock(return_value=client))
     answer,inp,out=agent.ask('Summarize alerts','preserved-model')
     real.close()
-    assert 'get_priority_alerts' in answer and (inp,out)==(20,10)
+    assert 'Dashboard: Executive overview' in answer and 'get_priority_alerts' not in answer and (inp,out)==(20,10)
     assert usage.summary()['today']==2
     assert client.chats.create.call_args.kwargs['model']=='preserved-model'
 

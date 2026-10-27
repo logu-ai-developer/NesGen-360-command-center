@@ -86,7 +86,7 @@ def response(text='Evidence answer.',calls=None):
 def test_onboarding_prefetch_finishes_in_one_request(fake_sdk,approvals):
     client,chat=fake_sdk;chat.send_message.return_value=response()
     text,inp,out=agent.ask('What was the onboarding trend in the last 10 days?','unchanged-model')
-    assert 'get_onboarding_trend' in text and (inp,out)==(10,5)
+    assert 'Dashboard: User adoption' in text and 'get_onboarding_trend' not in text and (inp,out)==(10,5)
     assert chat.send_message.call_count==1
     assert client.chats.create.call_args.kwargs['model']=='unchanged-model'
     assert 'future_dated_rows_excluded' in chat.send_message.call_args.args[0]

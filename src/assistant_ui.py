@@ -11,6 +11,9 @@ from src.components import header
 EXAMPLES={
  'Platform Team':[
   'What requires attention today in Platform health?',
+  'List the models on the platform with their provider, version and risk.',
+  'What is the latest model version available on the platform?',
+  'Tell me about GPT-5.1 — its governance status and what it is best for.',
   'Which models require governance review?',
   'Show platform health summary.',
   'Using New Relic, compare event counts and P95 latency by provider for the latest available seven days.'],
@@ -34,7 +37,6 @@ EXAMPLES={
 def render_assistant(scope):
     model=str(setting('GEMINI_MODEL'))
     header('AI assistant','Decision support',f'Ask {model}, grounded in approved local dashboard evidence.')
-    st.info('Read-only dashboard tools. No web access, arbitrary SQL, record changes or paid-provider fallback.')
     defaults={'agent_session':str(uuid.uuid4()),'agent_messages':[],'agent_cooldown_until':0,
               'agent_busy':False,'agent_pending':None}
     for key,value in defaults.items():
@@ -50,7 +52,7 @@ def render_assistant(scope):
         with st.expander('💡 Example Questions',expanded=True):
             audience=st.selectbox('Audience',list(EXAMPLES),key='ai_example_audience',disabled=busy)
             for question in EXAMPLES[audience]:st.markdown('• '+question)
-            st.caption('Changing the audience only changes examples. It never submits a model request. “Last N days” ends today UTC.')
+            st.caption('These are just ideas — type any question about the platform in the box below. Changing the audience only changes examples; it never submits a request. “Last N days” ends today UTC.')
         with st.expander('Limits explained'):
             st.caption('Tool rounds apply to one question. Three rounds allow up to four model requests. RPM/RPD count each model request.')
     with col1:
@@ -97,7 +99,8 @@ def render_assistant(scope):
                 logging.getLogger('nesgen.agent').warning('AI incident=%s status=%s detail=%s',incident,getattr(exc,'code',None),_detail)
                 messages={'authentication':'Gemini authentication failed. Check the OS API key and restart.',
                     'provider_quota':'Provider quota reached. Wait before a deliberate retry.',
-                    'timeout':'The model request timed out. No automatic retry was attempted.',
+                    'timeout':'The model request timed out (over 60s). No automatic retry was attempted. Try a narrower question or retry once.',
+                    'server_error':'The AI provider returned a temporary error (5xx). Wait a moment and try again.',
                     'network':'The connection was interrupted or reset (possibly WinError 10054). No automatic retry was attempted. Wait, then retry once.',
                     'application_limit':'Application safety limit reached. Wait or narrow the question.',
                     'response_blocked':'The model blocked the response. Rephrase the question.',

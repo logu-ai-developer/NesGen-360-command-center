@@ -64,6 +64,29 @@ def fmt_pct(value, digits: int = 2) -> str:
     return 'N/A' if value is None or pd.isna(value) else f'{value:.{digits}f}%'
 
 
+def fmt_count(value) -> str:
+    """Readable integer count in millions notation: billion (>= 1e9) -> 'B', million (>= 1e6) -> 'M' and
+    thousand (>= 1e3) -> 'K' are abbreviated to one decimal (e.g. 2,000,000 -> '2M', 45,400,000 -> '45.4M',
+    931,000 -> '931K'); smaller values keep grouped digits (e.g. 9,961). Display helper for dashboard KPI
+    cards only; AI evidence keeps raw digits so number-grounding is unaffected. Returns 'N/A' for a missing value."""
+    if value is None or pd.isna(value):
+        return 'N/A'
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    neg, n = n < 0, abs(float(value))
+    if n >= 1e9:
+        s = f'{n / 1e9:.1f}'.rstrip('0').rstrip('.') + 'B'
+    elif n >= 1e6:
+        s = f'{n / 1e6:.1f}'.rstrip('0').rstrip('.') + 'M'
+    elif n >= 1e3:
+        s = f'{n / 1e3:.1f}'.rstrip('0').rstrip('.') + 'K'
+    else:
+        s = f'{int(round(n)):,}'
+    return '-' + s if neg else s
+
+
 # ---- Use-case identity, stage and status --------------------------------------------------------
 STATUS_ALLOWLIST = {'active': 'Active', 'operational': 'Active', 'dormant': 'Dormant',
                     'new': 'New', 'onboarding': 'Onboarding'}

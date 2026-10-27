@@ -33,7 +33,7 @@ def query_session(scope=None):
 
 def _frame(name):
     state = _STATE.get()
-    loaders = {'applications': dashboard.get_apps, 'models': dashboard.get_models,
+    loaders = {'applications': dashboard.get_apps, 'models': lambda: dashboard.get_models(demo=True),
                'health_daily': dashboard.get_health, 'charges': dashboard.synthetic_charges,
                'alerts': dashboard.synthetic_alerts}
     if state is not None and name in state['frames']:

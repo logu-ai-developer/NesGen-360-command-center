@@ -14,7 +14,9 @@ def text_of(at):
 
 
 def render(page=None):
-    at = AppTest.from_file(APP, default_timeout=60).run()
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.session_state['nesgen_real_data'] = True   # exercise the real pipeline (synthetic fallback without parquet), as before the demo-only switch
+    at.run()
     if page:
         at.sidebar.radio[0].set_value(page).run()
     assert not at.exception and not at.error, [x.value for x in at.error]
@@ -39,6 +41,10 @@ def test_executive_shows_only_existing_findings_as_navigation_cards(no_gemini):
     assert labels and all(x.startswith('Open ') and x.endswith('→') for x in labels)
     assert 'Open Chargeback →' in labels and 'Open Platform health →' in labels
     assert '🔴' in text and '🟠' in text and 'No priority findings identified' not in text
+    # Each priority finding carries a module eyebrow naming the page its evidence lives on; the alerts dataframe is gone.
+    assert 'finding-module' in text and 'class="finding-module">Platform health<' in text
+    assert 'Leadership action queue' not in text
+    assert 'AI findings' not in text and 'Recommended actions' not in text          # the brief is shown once (Priority findings), not repeated below
 
 
 def test_clicking_a_finding_opens_its_page_through_session_state(no_gemini):
@@ -69,9 +75,9 @@ def test_platform_health_sections_and_card_placement(no_gemini):
     marks = [text.index('group-title">' + x) for x in names] + [len(text)]
     assert marks == sorted(marks)
     sec = dict(zip(names, (text[marks[i]:marks[i + 1]] for i in range(5))))
-    groups = {'Volume': ('Total events', 'Total classified calls', 'Unclassified events'),
-              'Outcomes': ('Successful classified calls', 'Failed classified calls', 'Classified-call success rate'),
-              'Performance': ('Event-level P95 latency', 'P95 latency (daily trend)', 'Peak daily P95')}
+    groups = {'Volume': ('Total events', 'Total classified calls'),
+              'Outcomes': ('Successful classified calls', 'Failed classified calls', 'Call success rate'),
+              'Performance': ('P95 response time', 'P95 latency (daily trend)', 'Peak daily P95')}
     for name, labels in groups.items():
         for label in labels:
             assert f'kpi-label">{label}<' in sec[name]
@@ -86,7 +92,9 @@ def test_platform_health_scope_and_scenario_labels(no_gemini):
     at, text = render('Platform health')
     assert 'not affected by the Environment filter' in text and 'fixed snapshot' in text
     assert any('Illustrative synthetic scenario' in e.label for e in at.expander)
-    assert 'not available' in text and 'errors are not linked to a model or provider' in text      # drill-down limitation is stated
+    # On demo telemetry errors ARE linked to a provider and model, so the error views follow the focus provider (the
+    # real-telemetry window-wide limitation is disclosed only when the breakdown is absent).
+    assert 'errors are linked to a provider and model' in text and 'follow the focus provider' in text
     assert any(s.key == 'ph_provider_focus' for s in at.selectbox)
 
 
@@ -126,9 +134,9 @@ def test_adoption_cards_are_grouped_in_order(no_gemini):
     groups = [text.index(f'group-title">{g}') for g in ('Portfolio', 'Status', 'Usage')]
     assert groups == sorted(groups)
     portfolio, status, usage = text[groups[0]:groups[1]], text[groups[1]:groups[2]], text[groups[2]:]
-    for label in ('Use cases onboarded', 'Sandbox use cases', 'Industrialized use cases'):
+    for label in ('Use cases in portfolio', 'Sandbox use cases', 'Industrialized use cases'):
         assert f'kpi-label">{label}<' in portfolio
-    for label in ('Active-status use cases', 'New-status use cases', 'Dormant-status use cases', 'Onboarding-status use cases'):
+    for label in ('Active use cases', 'New-status use cases', 'Inactive use cases', 'Onboarding-status use cases'):
         assert f'kpi-label">{label}<' in status
     assert 'kpi-label">Estimated active users<' in usage
 
@@ -166,4 +174,16 @@ def test_outcomes_chart_is_a_daily_outcomes_trend(no_gemini):
     import json
     names = [t['name'] for t in json.loads(fig)['data']]
     assert names == ['Total Calls', 'Successful Classified Calls', 'Failed Classified Calls']
-    assert 'kpi-label">Classified-call success rate<' in text
+    assert 'kpi-label">Call success rate<' in text
+
+
+def test_adoption_charts_are_not_colour_only(no_gemini):
+    # UA-16 (Phase 6A WS-3): adoption charts stay legible without relying on colour alone.
+    import json
+    at, _ = render('User adoption')
+    specs = [c.proto.spec for c in at.get('plotly_chart')]
+    seg = json.loads(next(s for s in specs if '"B2B"' in s and '"B2C"' in s))['data']     # segment chart (by its series names)
+    assert any(t.get('marker', {}).get('pattern', {}).get('shape') for t in seg)          # B2B/B2C differ by texture too
+    assert all(t.get('text') is not None for t in seg)                                    # value labels on bars
+    reg = json.loads(next(s for s in specs if 'In portfolio' in s))['data']               # regional chart
+    assert all(t.get('text') is not None for t in reg)                                    # value labels on both series

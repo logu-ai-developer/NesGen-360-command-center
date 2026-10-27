@@ -7,9 +7,11 @@ from src.data import enrich_models, synthetic_models
 from tests.test_phase1_metrics import no_gemini  # noqa: F401
 from tests.test_phase3_experience import render, text_of
 
-GOOD = json.dumps({'current_position': 'A.', 'governance_risks': 'B.', 'evidence_gaps': 'C.', 'suggested_next_review_areas': 'D.'})
-EVIDENCE_LABELS = ['Risk', 'Review Status', 'Retirement Status', 'Suggested Candidate', 'Replacement Readiness',
-                   'Migration Readiness', 'Evidence Completeness', 'Retirement Urgency', 'Illustrative Decommission Readiness Score']
+GOOD = json.dumps({'model_overview': 'O.', 'why_flagged': 'A.', 'current_position': 'B.', 'available_options': 'C.', 'recommended_actions': 'D.'})
+EVIDENCE_LABELS = ['Risk', 'Risk Reason', 'Evaluation Score', 'Unique API Clients', 'Review Status', 'Retirement Status',
+                   'Retirement Timing', 'Suggested Candidate', 'Replacement Availability', 'Replacement Readiness',
+                   'Migration Readiness', 'Evidence Completeness', 'Illustrative Decommission Readiness Score',
+                   'Operational Footprint (telemetry)', 'Provider Context (cost & governance)']
 
 
 def _row():
@@ -102,3 +104,27 @@ def test_unparseable_reply_is_treated_as_unavailable(no_gemini, monkeypatch):
     next(b for b in at.button if b.label == 'Analyze Model').click().run()
     text = _page_text(at)
     assert ma.UNAVAILABLE in text and 'AI Interpretation' not in text and 'This model is approved' not in text
+
+# ---- AI-04 parity: number-grounding (Phase 6A WS-2) -----------------------------------------------
+def test_validate_grounding_rejects_invented_numbers_but_allows_evidence_numbers():
+    ev = ma.build_evidence(_row())                      # contains the readiness score, e.g. "NN / 100 (illustrative)"
+    ma.validate_grounding({'why_flagged': 'A.', 'current_position': 'B.',
+                           'available_options': 'C.', 'recommended_actions': 'D.'}, ev)            # no numbers → passes
+    import json as _json
+    an_evidence_number = ma._numbers(_json.dumps(ev))[0]
+    ma.validate_grounding({'why_flagged': f'The score is {an_evidence_number}.', 'current_position': 'B.',
+                           'available_options': 'C.', 'recommended_actions': 'D.'}, ev)            # quoting evidence → passes
+    with pytest.raises(ValueError):
+        ma.validate_grounding({'why_flagged': 'The score is 987654.', 'current_position': 'B.',
+                               'available_options': 'C.', 'recommended_actions': 'D.'}, ev)        # invented → rejected
+
+
+def test_analyze_rejects_invented_number_and_falls_back(no_gemini, monkeypatch):
+    bad = json.dumps({'why_flagged': 'This model handled 987654 calls.', 'current_position': 'B.',
+                      'available_options': 'C.', 'recommended_actions': 'D.'})
+    monkeypatch.setattr(ma, '_generate', lambda *a, **k: bad)
+    at, _ = render('Model lifecycle')
+    next(b for b in at.button if b.label == 'Analyze Model').click().run()
+    text = _page_text(at)
+    assert not at.exception and ma.UNAVAILABLE in text and 'AI Interpretation' not in text and '987654' not in text
+    assert all(label in text for label in EVIDENCE_LABELS)                                         # evidence stays visible

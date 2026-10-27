@@ -1,7 +1,10 @@
 from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
-PAGES=['Executive overview','Model lifecycle','Platform health','User adoption','Chargeback','AI assistant','Administration','Solution design','Requirements','Demo & tests']
+# Administration, Solution design, Requirements and Demo & tests are internal scaffolding hidden from navigation
+# (Administration hidden 2026-10-26 usability review); they keep their ROUTES entries but cannot be selected from the
+# sidebar radio, so they are not exercised here.
+PAGES=['Executive overview','Platform health','Model lifecycle','User adoption','Chargeback','AI assistant']
 @pytest.mark.parametrize('page',PAGES)
 def test_page_fallback(page):
     at=AppTest.from_file(str(Path(__file__).resolve().parents[1]/'app.py'),default_timeout=30).run()

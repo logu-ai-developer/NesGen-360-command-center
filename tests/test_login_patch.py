@@ -104,6 +104,9 @@ def test_admin_navigation(accounts):
     from streamlit.testing.v1 import AppTest
     at=AppTest.from_file(str(Path(__file__).resolve().parents[1]/'app.py'),default_timeout=30)
     at.session_state['auth_token']=auth.login('admin_123',PASS)
-    at.run();assert 'Administration' in at.sidebar.radio[0].options
-    at.sidebar.radio[0].set_value('Administration').run()
+    at.run();assert not at.exception
+    # Administration is now hidden from the visible navigation for everyone, including admins (2026-10-26 usability review);
+    # it stays a reachable route/function and still enforces require_admin(). The admin can still use the dashboard.
+    assert 'Administration' not in at.sidebar.radio[0].options
+    at.sidebar.radio[0].set_value('Executive overview').run()
     assert not at.exception and not at.error
