@@ -11,5 +11,4 @@ __pycache__/
 data/*.xlsx
 data/**/*.parquet
 data/*.duckdb
-data/*.db
 CLAUDE.md
