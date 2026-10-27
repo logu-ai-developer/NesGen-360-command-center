@@ -48,26 +48,26 @@ Stakeholder group is descriptive. It is not employment verification, a permissio
 
 ### Pages
 
-| Page | What colleagues can do | Important qualification |
-|---|---|---|
-| Executive overview | Review portfolio KPIs, reliability trends, weighted provider shares and the action queue | Some KPIs and priority scenarios are fixed demo values; not every sidebar filter applies to every panel |
-| Model lifecycle | Filter models, inspect evaluation scores, risk, review dates and migration decisions | Evaluation score and lifecycle risk are different fields; review candidates are not verified provider retirements |
-| Platform health | Inspect daily health trends and operational scenarios | New Relic log-event proxies are not verified end-to-end availability or deduplicated request success |
-| User adoption | Inspect applications, status-based regional counts, expected users and recertification | Workbook status and approval dates do not establish observed activity or sustained adoption |
-| Chargeback | Compare synthetic provider bills and attributed usage; apply a configured review threshold | No live MuleSoft or provider-billing connector is implemented |
-| AI assistant | Ask questions through approved read-only local tools | Model calls require a valid OS API key, network access and an available configured model |
-| Administration | Save settings, register local models, inspect source status and manage end-user activation | Admin only; writes are checked in backend actions as well as navigation |
-| Solution design | Explain the target architecture and production roadmap | Target services are not automatically implemented integrations |
-| Requirements | Inspect POC versus production commitments | Implemented means local prototype capability, not production approval |
-| Demo & tests | Follow the demonstration flow and checklist | Checkboxes and KPI labels are not live proof that tests ran |
+The navigation menu shows **six decision modules** (in this order). Four earlier routes — Administration, Solution design, Requirements and Demo & tests — are kept in the code (reachable functions, `require_admin()` still enforced on Administration) but **hidden from the menu** since the 2026-10-26 review.
 
-Admins can access all ten routes. End users do not receive the Administration route.
+| Page (in menu) | What colleagues can do | Important qualification |
+|---|---|---|
+| Executive overview | Review portfolio KPIs, reliability trends, weighted provider shares and the priority-findings cards | Some KPIs and priority scenarios are fixed demo values; not every sidebar filter applies to every panel |
+| Platform health | Inspect daily health trends, the per-model error breakdown and the Error Analysis Assistant | New Relic log-event proxies are not verified end-to-end availability or deduplicated request success |
+| Model lifecycle | Inspect the (synthetic demo) model inventory, evaluation scores, risk, review/retirement status and the Model Evaluation Assistant | Evaluation score and lifecycle risk are different fields; a suggested candidate is a rule-derived suggestion, not an approval |
+| Chargeback | Compare synthetic provider bills and attributed usage, apply a configured threshold and use the Chargeback Reconciliation Assistant | No live MuleSoft or provider-billing connector is implemented |
+| User adoption | Inspect applications, status-based regional counts, expected users and recertification | Workbook status and approval dates do not establish observed activity or sustained adoption |
+| AI assistant | Ask free-text questions through approved read-only local tools | Model calls require a valid OS API key, network access and an available configured model |
+
+Hidden routes (code present, not in the menu): **Administration** (Admin-only settings, local model registration, source status, end-user activation), **Solution design**, **Requirements**, **Demo & tests**. End users never receive the Administration route.
 
 ### Current implementation versus future integration
 
 Implemented: local Excel adapters, local Parquet analysis, SQLite persistence, deterministic synthetic fallbacks, local username/password login, two roles, model registration, settings, read-only AI tools, per-model-request quota reservations and a per-session UI request gate.
 
 Not implemented as live integrations: provider invoice ingestion, MuleSoft reconciliation, live New Relic/Log Analytics API collection, enterprise SSO/MFA, enterprise identity verification, production audit retention and managed operational storage.
+
+**Demo-only data mode (2026-10-26).** The earlier Real/Demo toggle was removed from the UI; the POC runs on the deterministic **synthetic scenario** telemetry (180 days, anchored 2026-10-17) everywhere it is wired, and the **Model lifecycle inventory is fully synthetic demo data** (realistic model names, a fixed 14 Industrialized / 12 Sandbox / 6 Retirement shape) rather than the workbook. The data layer still supports the real Excel/Parquet path; a hidden `nesgen_real_data` session flag keeps it testable. The Model workbook contract in [Data placement and contracts](#8-data-placement-and-contracts) therefore describes the optional real path, not what the demo shows.
 
 **The supplied text bundle is a source snapshot, not a runnable repository by itself.** Colleagues need the complete current repository and any approved source data. The text bundle does not include the actual Excel/Parquet datasets or the operational database.
 
@@ -276,26 +276,34 @@ nesgen-360-final/
 │   ├── storage.py
 │   ├── config.py
 │   ├── components.py
+│   ├── metrics.py                    # shared outcome classification + count/percent formatting
+│   ├── insights.py                   # Executive decision-brief rules, KPI copy, status colours
+│   ├── timewindow.py                 # 30/90/180-day windows, per-source latest-date anchor
 │   ├── auth.py
 │   ├── auth_ui.py
-│   ├── agent.py
+│   ├── agent.py                      # free-text chat agent + tool loop
 │   ├── assistant_insights.py
 │   ├── assistant_ui.py
 │   ├── query_tools.py
+│   ├── model_assistant.py            # Model Evaluation Assistant + shared _generate / loads_lenient
+│   ├── error_assistant.py            # Error Analysis Assistant
+│   ├── chargeback_assistant.py       # Chargeback Reconciliation Assistant
+│   ├── cross_domain.py               # cross-module join (telemetry + cost + governance)
 │   ├── request_gate.py
 │   ├── usage.py
 │   ├── core.py
 │   └── README_PATCH.md
-├── tests/
+├── tests/                            # ~359 tests; files below are representative, not exhaustive
 │   ├── conftest.py
-│   ├── test_agent_evidence_fix.py
-│   ├── test_assistant_audience_patch.py
-│   ├── test_final.py
-│   ├── test_login_patch.py
-│   ├── test_pages.py
-│   ├── test_rebuild.py
-│   ├── test_request_lock_patch.py
-│   └── test_structured_queries.py
+│   ├── test_phase1_metrics.py        # metric correctness
+│   ├── test_phase2_time.py           # time windows + windowed pages
+│   ├── test_phase3_experience.py     # executive cards, navigation, lifecycle ordering
+│   ├── test_v11_data.py              # synthetic data, candidates, readiness status
+│   ├── test_model_assistant.py / test_error_assistant.py / test_chargeback_assistant.py
+│   ├── test_cross_domain.py
+│   ├── test_agent_evidence_fix.py / test_assistant_audience_patch.py / test_request_lock_patch.py
+│   ├── test_pages.py / test_final.py / test_login_patch.py
+│   └── … (run `pytest -q` for the full set)
 └── docs/
     └── architecture, data contracts, security, demo and validation notes
 ```
@@ -304,14 +312,21 @@ The `data/` tree describes expected runtime placement, not proof that these bina
 
 | Module | Responsibility |
 |---|---|
-| `app.py` | Login gate, role-aware navigation, sidebar scope and ten page routes |
-| `data.py` | Canonical Excel/health adapters, source-status recording and synthetic datasets |
+| `app.py` | Login gate, role-aware navigation (six menu modules + four hidden routes), per-page time window, sidebar scope and page bodies |
+| `data.py` | Canonical Excel/health adapters, synthetic demo datasets, model enrichment (readiness, candidates, error breakdown) |
 | `provider.py` | Normalize provider weights and calculate allocated monthly request shares |
+| `metrics.py` | Shared outcome classification (FLOW-END/FLOW-ERROR/Unclassified) and count/percent formatting |
+| `insights.py` | Executive decision-brief rules, KPI drawer copy and status colours/badges |
+| `timewindow.py` | 30/90/180-day windows with a per-source latest-date anchor |
 | `storage.py` | Settings, local model records, source status and protected Admin writes |
 | `auth.py` / `auth_ui.py` | Credentials, sessions, permissions, registration, login/logout and user management |
-| `agent.py` | Chat tool loop, evidence tracking, routing, final summarization and safe error classification |
+| `agent.py` | Free-text chat agent: tool loop, evidence tracking, prefetch, evidence fallback and safe error classification |
+| `model_assistant.py` | Model Evaluation Assistant; also the shared bounded Gemini call (`_generate`, schema-constrained) and `loads_lenient` |
+| `error_assistant.py` | Error Analysis Assistant (Platform health) |
+| `chargeback_assistant.py` | Chargeback Reconciliation Assistant with rule-based team routing |
+| `cross_domain.py` | Grounded cross-module join (a model's telemetry footprint + its provider cost/governance) |
 | `assistant_insights.py` | Onboarding trends, chargeback/health reports and decision briefs |
-| `assistant_ui.py` | Audience examples, chat state, request submission and incident messages |
+| `assistant_ui.py` | AI assistant page: example buttons, chat state, request submission and incident messages |
 | `request_gate.py` | Process-local, per-session overlap protection and frozen pending requests |
 | `query_tools.py` | Approved dataset catalog, parameterized aggregate queries and bounded results |
 | `usage.py` | Durable per-model-call reservations and question-level usage records |
@@ -485,6 +500,8 @@ Classified-call failure rate = Failed / Classified calls x 100          (N/A whe
 Unclassified share           = Unclassified / Total events x 100
 ```
 
+**On-screen card names (2026-10-26 usability review).** The KPI *labels* were shortened while the definitions above are unchanged: "Classified-call success rate" is shown as **Call success rate**, "Event-level P95 latency" as **P95 response time**, "Active-status use cases" as **Active use cases**, "Dormant-status use cases" as **Inactive use cases**, and the "Illustrative Decommission Readiness Score" as **Retirement Readiness**. The standalone "Unclassified events" KPI card was removed (the disclosure remains as the badge, the Platform Health "Learn more" expander and the undated-events line in Data basis). This section keeps the full formal names so the formulas stay unambiguous.
+
 One shared helper (`src/metrics.py`) drives the Platform Health cards, the daily trend, failures by model, top errors, the Executive finding, decision briefs and AI/tool evidence, so they cannot disagree. The severity-based "non-error event rate" (`non_error_event_percent` query metric) is a different measure and is not comparable to the classified-call success rate. Neither is verified availability or deduplicated request success. Maximum daily P95 is not P95 over all events; the page's "daily trend" P95 is a percentile of daily P95s over classified calls. The earlier "Services healthy 41 / 43" card was removed because it was a hardcoded illustration. See `docs/METRIC_DEFINITIONS.md`.
 
 ### Chargeback and alerts
@@ -529,7 +546,7 @@ AGENT_MAX_TOOL_ROUNDS=6
 AGENT_MAX_HISTORY_MESSAGES=6
 AGENT_MAX_RETRIES=0
 AGENT_COOLDOWN_SECONDS=8
-AGENT_REQUEST_TIMEOUT_SECONDS=30
+AGENT_REQUEST_TIMEOUT_SECONDS=60
 ```
 
 The timeout is supplied by `DEFAULTS` in the current bundle even though it is absent from the bundled TOML. The model string is the configured identifier in the supplied code, **not independently verified model availability**. Retain the identifier approved and working for your project; do not uppercase or otherwise transform it for API calls.
@@ -545,7 +562,7 @@ The timeout is supplied by `DEFAULTS` in the current bundle even though it is ab
 | `AGENT_MAX_HISTORY_MESSAGES` | 6 | Recent individual messages, not six complete conversations; content is bounded per message |
 | `AGENT_MAX_RETRIES` | 0 | Configuration intent; current agent has no automatic retry loop and does not use this value to enable retries |
 | `AGENT_COOLDOWN_SECONDS` | 8 | UI cooldown after a handled failure; a rejected submission during cooldown is not automatically queued |
-| `AGENT_REQUEST_TIMEOUT_SECONDS` | 30 | SDK HTTP timeout in seconds; not a hard end-to-end deadline for all local loading/tool work |
+| `AGENT_REQUEST_TIMEOUT_SECONDS` | 60 | SDK HTTP timeout in seconds; not a hard end-to-end deadline for all local loading/tool work |
 
 A tool round can contain several local tool calls. With six rounds, one complex question can consume seven of the eight local model requests permitted in a rolling minute. Subsequent questions may hit RPM even if only one user is present. The final allowed model request has tools disabled to encourage summarization. The Python `ask()` default argument remains three rounds, but the current UI explicitly passes the configured value of six.
 
@@ -574,9 +591,21 @@ Explicit Send / Analyze action
 
 The integration uses `client.chats.create()` and `chat.send_message()`. Hidden SDK automatic function execution is disabled; the application controls the function loop and counts each model request. Metadata-only calls do not count as factual data retrieval.
 
-The 4:1 page layout has chat on the left and audience-specific examples on the right. Changing Audience or Suggested question does **not** submit a model request. During a request, Send, Analyze, Audience, Suggested question and Clear are disabled. The pending request is consumed before the model call so a widget rerun cannot replay it automatically.
+The page shows the chat on the left with an **Example questions** panel above the input: an Audience selector plus one **button per example question**. Click an example to run it, or type any question in the chat box and press Enter. Changing the Audience only swaps the example buttons; it never submits a model request. During a request the example buttons, Audience, the question box and Clear are disabled. The pending request is consumed before the model call so a widget rerun cannot replay it automatically. (The earlier "Suggested question" dropdown and "Analyze suggested question" button were removed in favour of this single, unambiguous input.)
 
 The gate is **per session and per Python process**, not a global queue, distributed lock or background job system. Different sessions can run concurrently subject to the shared SQLite quotas. An interrupted UI run may leave provider completion unknown; no automatic replay is attempted.
+
+### Page-level assistants (separate from the chat agent)
+
+Besides the free-text chat agent on the AI assistant page, three **bounded, single-call assistants** live inside specific pages. They are a different design: the page first computes the evidence **deterministically (no AI)** and shows it in a table; only on an explicit **Analyze** click does one Gemini call run to *explain* that evidence. They call **no tools, no web, no dashboard queries** — they only narrate what is already on screen, and fall back to "AI analysis is currently unavailable." on any failure.
+
+| Assistant | Page | File | What it explains |
+|---|---|---|---|
+| Model Evaluation Assistant | Model lifecycle | `src/model_assistant.py` | One model's governance position, the suggested-candidate trade-off, and a short "About this Model" general-knowledge line |
+| Error Analysis Assistant | Platform health | `src/error_assistant.py` | The focused provider/model/error-code evidence: what the code means, why it happens, how to reduce it, and the owner |
+| Chargeback Reconciliation Assistant | Chargeback | `src/chargeback_assistant.py` | A provider's invoice-vs-attributed variance and the rule-routed team to engage |
+
+All three share one quota-governed Gemini call (`model_assistant._generate`), which constrains the reply to a **JSON response schema** of the required fields, parses it tolerantly (`loads_lenient`) and then runs a **validator**: every data number must appear in the evidence (no fabricated figures), the owner must be on a closed list, and required disclaimers must be present. They enforce the same number-grounding guarantee as the chat agent; the governance decision stays human-owned. `src/cross_domain.py` lets the Model Evaluation Assistant and the chat agent join a model's telemetry footprint with its provider's cost/governance context, so one answer can reason across modules while every value remains a real figure from a real adapter.
 
 ### Questions to try
 
@@ -584,6 +613,9 @@ The gate is **per session and per Python process**, not a global queue, distribu
 
 ```text
 What requires attention today in Platform health?
+List the models on the platform with their provider, version and risk.
+What is the latest model version available on the platform?
+Tell me about GPT-5.1 — its governance status and what it is best for.
 Which models require governance review?
 Show platform health summary.
 Using New Relic, compare event counts and P95 latency by provider for the latest available seven days.
@@ -715,7 +747,9 @@ Coverage in the supplied tests includes date boundaries, future approvals, sourc
 
 ### Historical reports versus this snapshot
 
-Bundled reports record earlier milestones: **78** rebuild tests, **94** AI-update tests and **115** login-update tests. Those are historical results, not a fresh result for this exact bundle. The current source adds request-lock tests and other edits. This README was prepared by source review only; no new pass count is claimed.
+Bundled reports record earlier milestones: **78** rebuild tests, **94** AI-update tests and **115** login-update tests. Those are historical results, not a fresh result for this exact bundle. The current source adds request-lock tests and other edits.
+
+**Current snapshot:** the full suite is now **359 passing tests** (last full run 2026-10-27, exit 0), spanning the V1.1 phase work (metric correctness, time windows, executive experience, the per-page assistants, synthetic demo data and the AI JSON-robustness fix). Re-run `pytest -q` and record your own result before a demo; the count moves as features are added.
 
 **V1.1 Phase 1 result:** the starting local snapshot reported 133 passing tests (historical, earlier snapshot). After Phase 1 the full suite is run again; the measured result is recorded in `docs/VALIDATION.md`. New focused tests are in `tests/test_phase1_metrics.py` (run `.\.venv\Scripts\python.exe -m pytest -q tests/test_phase1_metrics.py`).
 
@@ -761,7 +795,7 @@ A question can use several model requests. With six rounds, up to seven requests
 
 ### Audience changes appear to do nothing
 
-This is intentional: selecting an audience or question only changes examples. Click Analyze or submit chat to run a question. During execution, controls are disabled. Submissions during cooldown are rejected rather than automatically replayed; wait and submit again.
+This is intentional: the Audience selector only swaps which example buttons are shown — it never submits anything. To run a question, click an example button or type in the chat box and press Enter. During execution, controls are disabled. Submissions during cooldown are rejected rather than automatically replayed; wait and submit again.
 
 ### No answer / evidence-only output
 
@@ -944,5 +978,7 @@ Before a shared pilot or production use:
 ### Documentation basis
 
 Prepared from the 47-file source snapshot `nesgen360-final-project-bundle-v1.txt`. Primary references are `app.py`, `src/config.py`, `src/data.py`, `src/provider.py`, `src/agent.py`, `src/assistant_insights.py`, `src/assistant_ui.py`, `src/request_gate.py`, `src/query_tools.py`, `src/auth.py`, `src/auth_ui.py`, `src/storage.py`, `src/usage.py`, startup/setup scripts and the supplied tests. Historical results are attributed to the bundled reports, not presented as a new validation run.
+
+**Reconciled 2026-10-27** against the live code for: navigation (six menu modules + four hidden routes), `AGENT_REQUEST_TIMEOUT_SECONDS` = 60, the single-input AI assistant (example buttons + chat box; the "Suggested question" dropdown removed), the three page-level assistants and `cross_domain.py`, demo-only data mode, the `src/`/`tests/` listings, the Platform Team examples, and the current on-screen metric names. Sections not listed here were not re-verified in this pass.
 
 **Handover rule:** if a future code change alters setup, permissions, metrics, limits, data contracts or deployment behavior, update this README and rerun the relevant tests before sharing the repository again.
